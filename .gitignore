@@ -18,3 +18,13 @@ cloisonne-generator/output/
 # OS
 Thumbs.db
 .DS_Store
+
+# 仓库整理临时文件
+_repo_body.json
+_repo_resp.json
+_ls.json
+
+# 根目录原始规格书副本（docs/ 下为正式副本）
+/开源掐丝模型生成器推荐.html
+/开源掐丝模型生成器推荐-2.html
+/开源掐丝模型生成器推荐-2_files/
