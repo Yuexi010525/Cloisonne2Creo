@@ -11,10 +11,10 @@
   </defs>
 
   <g id="boundaries">
-    <polyline class="boundary-raw" points="50.0,0.3333 50.0,66.6667"/>
+    <polyline class="boundary-raw" points="50.2,0.0 50.0004,3.294 50.0,66.6667"/>
   </g>
   <g id="final-wire-curves">
-    <path class="final-wire" d="M 50.0 0.3333 C 50.0 22.44443333333334, 50.0 44.55556666666668, 50.0 66.6667" id="B000"/>
-    <text class="boundary-id" x="50.0" y="66.6667">B000</text>
+    <path class="final-wire" d="M 50.2 0.0 C 50.1333 22.2222, 50.0667 44.4445, 50.0 66.6667" id="B001"/>
+    <text class="boundary-id" x="50.0004" y="3.294">B001</text>
   </g>
 </svg>
