@@ -1,9 +1,10 @@
 """
 VTracerAdapter - VTracer开源矢量化引擎适配器
-规格书V2.0:
+规格书V2.0/V2.1:
 - VTracer负责"图片→颜色区域→初始矢量曲线"，不重写
-- 参数: clustering=color-cluster, hierarchical=cutout, mode=spline
-- 从VTracer SVG中解析出颜色区域，生成label_map供SharedBoundary使用
+- 参数: colormode=color, hierarchical=cutout, mode=spline
+- 从VTracer SVG中解析出颜色区域，生成label_map + Shapely Polygon
+  （V2.1: 保留矢量几何，供Shared Boundary做Shapely矢量化，不再栅格化）
 """
 import io
 import re
@@ -21,7 +22,7 @@ class VTracerAdapter:
         self.hierarchical = hierarchical
         self.colormode = colormode
         self.svg = None
-        self.regions = []       # [{id, color, path, segments, area_px, ...}]
+        self.regions = []       # [{id, color, path, segments, area_px, polygon, ...}]
         self.label_map = None   # (H, W) 每个像素的区域ID
         self.width = 0
         self.height = 0
@@ -106,11 +107,78 @@ class VTracerAdapter:
                 "area_px": area,
                 "contour_pts": contour_pts,
                 "transform": [tx, ty],
+                "polygon": self._build_polygon(path, (tx, ty)),
             })
 
         # 生成label_map：把每个path渲染到画布上
         self._build_label_map()
         return self.regions
+
+    def _build_polygon(self, path, transform):
+        """
+        从svgpathtools path构造Shapely Polygon（应用transform偏移）
+        V2.1: 保留VTracer矢量几何，供SharedBoundary做Shapely矢量化
+        正确处理多子环（外环+孔洞，如背景区域）:
+        面积法 - 最大子环为外环，其余子环为孔洞
+        (不能用unary_union: 会把"带孔洞背景+花瓣面"合并成实心矩形, 孔洞丢失)
+        """
+        try:
+            from shapely.geometry import Polygon, LineString
+            from shapely.ops import unary_union
+            from shapely.validation import make_valid
+        except ImportError:
+            return None
+
+        tx, ty = transform
+        rings = []
+        # 分割为连续子路径（VTracer path可能含多个子环: 外环+孔洞）
+        for sub in path.continuous_subpaths():
+            pts = []
+            for seg in sub:
+                for i in range(20):  # 高密度采样
+                    t = i / 20
+                    pt = seg.point(t)
+                    pts.append((float(pt.real) + tx, float(pt.imag) + ty))
+            if len(pts) < 3:
+                continue
+            # 闭合环
+            if abs(pts[0][0] - pts[-1][0]) > 1e-9 or abs(pts[0][1] - pts[-1][1]) > 1e-9:
+                pts.append(pts[0])
+            try:
+                ring = LineString(pts)
+                if ring.is_valid and ring.length > 1:
+                    rings.append(ring)
+            except Exception:
+                continue
+
+        if not rings:
+            return None
+
+        try:
+            # 面积法: 最大环为外环, 其余为孔洞(或独立子多边形)
+            rings.sort(key=lambda r: -r.length)
+            outer = rings[0]
+            holes = []
+            extras = []
+            for r in rings[1:]:
+                try:
+                    if outer.contains(r.representative_point()):
+                        holes.append(r)
+                    else:
+                        extras.append(r)
+                except Exception:
+                    extras.append(r)
+            poly = Polygon(outer.coords, [r.coords for r in holes])
+            if extras:
+                parts = [poly] + [Polygon(r.coords) for r in extras]
+                poly = unary_union(parts)
+            if not poly.is_valid:
+                poly = make_valid(poly)
+            if poly.is_empty:
+                return None
+            return poly
+        except Exception:
+            return None
 
     def _parse_transform(self, transform_str):
         """

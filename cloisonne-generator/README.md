@@ -1,7 +1,7 @@
-# 掐丝珐琅图片转 Creo 曲线生成器 V2.0 (Cloisonne2Creo)
+# 掐丝珐琅图片转 Creo 曲线生成器 V2.1 (Cloisonne2Creo)
 
-> **V2.0 核心原则：不重复造轮子**
-> 矢量化引擎复用开源项目 **VTracer**，只开发项目特有的 **Shared Boundary** + **工程约束** + **Creo 导出**。
+> **V2.1 核心原则：不重复造轮子，几何正确优先**
+> 矢量化引擎复用 **VTracer**，几何核心复用 **Shapely**，只开发项目特有的 **Shared Boundary** + **工程约束** + **Creo 导出**。
 
 ## 架构
 
@@ -16,18 +16,21 @@
 │        mode=spline, filter-speckle,            │
 │        color-precision                         │
 └────────────────────────────────────────────────┘
- │ SVG解析 (svgpathtools) → label_map
+ │ SVG解析 (svgpathtools) → 矢量Region (Polygon)
  ▼
 ┌────────────────────────────────────────────────┐
-│  【项目特有】Shared Boundary 提取               │
-│  相邻颜色区域的公共边界（非各自轮廓叠加）         │
+│  Shapely (开源几何库)                            │
+│  Region Polygon → 邻接判定 → buffer容差交         │
+│  → Shared Boundary LineString                   │
+│  (V2.1: 从栅格像素追踪改为纯矢量几何)             │
 └────────────────────────────────────────────────┘
- │
+ │ label_map 相邻过滤 + 重叠裁剪 + 端点焊接
  ▼
 ┌────────────────────────────────────────────────┐
-│  工程验证 (CurveValidator)                      │
-│  最小间距 / 最小曲率半径 / 自交 / 断线修复       │
-│  曲线合并 (G0/G1连续性)                        │
+│  工程验证 (CurveValidator / Shapely真几何)       │
+│  自交 is_simple / 线距 distance / 小半径         │
+│  曲线合并 (CurveMerger 4端点+自动翻转, G0/G1)    │
+│  断线修复                                       │
 └────────────────────────────────────────────────┘
  │
  ▼
@@ -130,35 +133,39 @@ python main.py
 cloisonne-generator/
 ├── main.py                        # FastAPI 入口
 ├── start.bat                      # Windows 启动脚本
-├── requirements.txt               # 依赖清单（含vtracer, ezdxf）
+├── requirements.txt               # 依赖清单（含vtracer, shapely, ezdxf）
 ├── frontend/
 │   ├── index.html                 # 主界面（三种模式 + 参数区）
 │   ├── css/style.css
 │   └── js/app.js
 ├── backend/
-│   ├── pipeline.py                # V2.0管线（VTracer引擎）
+│   ├── pipeline.py                # V2.1管线（VTracer + Shapely）
 │   ├── segmentation/
 │   │   ├── vtracer_adapter.py     # 【复用开源】VTracer适配器
 │   │   └── region_segmenter.py    # 【自研】区域分割+邻接图
 │   ├── boundary/
-│   │   └── shared_boundary.py     # 【自研·核心】公共边界提取
+│   │   └── shared_boundary.py     # 【自研·核心】Shapely矢量共享边界
 │   ├── curve/
 │   │   ├── simplifier.py          # 【自研】Douglas-Peucker简化
-│   │   ├── bezier_fitter.py       # 【自研】三次贝塞尔拟合
-│   │   ├── curve_merger.py        # 【自研】G0/G1连续性+曲线合并
+│   │   ├── bezier_fitter.py       # 【自研·降级】仅新SharedBoundary拟合
+│   │   ├── curve_merger.py        # 【自研】4端点+自动翻转, G0/G1合并
 │   │   └── broken_repair.py       # 【自研】断线检测与修复
-│   └── validation/
-│       └── curve_validator.py     # 【自研】间距/半径/自交/拓扑验证
+│   ├── validation/
+│   │   └── curve_validator.py     # 【自研】Shapely真几何验证
+│   └── legacy/                    # 【废弃】旧 K-Means/像素处理（保留参考）
+│       ├── quantizer.py
+│       └── processor.py
 ├── exporters/
 │   ├── svg_exporter.py            # 【自研】SVG导出
 │   ├── dxf_exporter.py            # 【自研】DXF导出 (SPLINE)
 │   ├── ibl_exporter.py            # 【自研】IBL (Creo) 导出
 │   └── json_exporter.py           # 【自研】JSON项目文件
 ├── tests/
-│   ├── test_v2_pipeline.py        # V2.0管线测试
-│   ├── test_vtracer_adapter.py    # VTracer适配器测试
-│   └── test_exports.py            # 导出验证
-└── examples/test_pattern.png      # 测试图
+│   ├── test_acceptance.py         # V2.1规格书最终验收
+│   ├── smoke_v21.py               # V2.1冒烟测试
+│   ├── test_v2_pipeline.py
+│   └── test_vtracer_adapter.py
+└── examples/                      # 测试图 + 输出样例
 ```
 
 ## 复用 vs 自研对照
@@ -167,8 +174,9 @@ cloisonne-generator/
 |------|------|------|
 | 图片→颜色区域→初始曲线 | **VTracer** (开源) | 不重写，`pip install vtracer` 直接调用 |
 | SVG解析 | **svgpathtools** (开源) | 解析VTracer输出的path |
+| 矢量几何（共享边界/验证） | **Shapely** (开源) | V2.1新增，纯矢量几何运算 |
 | SVG/DXF/IBL/JSON输出 | **svgpathtools/ezdxf** (开源) | 用开源库生成 |
-| Shared Boundary 提取 | **自研** | 项目核心创新点 |
+| Shared Boundary 提取 | **自研** | 项目核心创新点（Shapely buffer容差方案） |
 | 工程约束验证 | **自研** | 间距/半径/自交/断线 |
 | Creo 工作流衔接 | **自研** | IBL格式适配 |
 
@@ -183,13 +191,20 @@ cloisonne-generator/
 ## 版本
 
 - **V1.0**: 自研 K-Means + Bezier 引擎（已废弃，改为VTracer）
-- **V2.0** (当前): VTracer 引擎 + Shared Boundary + 工程验证 + 多格式导出
+- **V2.0**: VTracer 引擎 + Shared Boundary + 工程验证 + 多格式导出
+- **V2.1** (当前): 几何核心重构（按 ChatGPT 代码审查规格书执行）
+  - Shared Boundary：栅格像素追踪 → **Shapely 纯矢量几何**（buffer 容差 + label_map 相邻过滤 + 重叠裁剪 + 端点焊接）
+  - BezierFitter：**降级**——VTracer Spline 直接保留，禁止二次 Spline→点→Bezier；仅新生成的 Shared Boundary 点串拟合
+  - CurveMerger：支持 **4 端点组合 + 自动翻转**（A.end→B.start / A.end→B.end / A.start→B.start / A.start→B.end），G0≤0.01mm + G1≤3°
+  - CurveValidator：**Shapely 真几何检测**——自交用 `LineString.is_simple`，线距用 `LineString.distance`（曲线-曲线真实距离），替代 O(n²) 采样点对
+  - 废弃代码移入 `backend/legacy/`（quantizer.py / processor.py）
 
 ## 第三方依赖与许可证（规格书第五十一章）
 
 | 项目 | 许可证 | 用途 | 仓库 |
 |------|--------|------|------|
 | **VTracer** | MIT | 矢量化引擎（图片→颜色区域→Spline） | https://github.com/visioncortex/vtracer |
+| **Shapely** | BSD-3-Clause | 矢量几何（共享边界/自交/线距） | https://github.com/shapely/shapely |
 | **image-to-svg** | MIT | UI/流程参考项目 | https://github.com/edo1z/image-to-svg |
 | **svgpathtools** | MIT | SVG Path 解析 | https://github.com/mathandy/svgpathtools |
 | **ezdxf** | MIT | DXF 读写 | https://github.com/mozman/ezdxf |

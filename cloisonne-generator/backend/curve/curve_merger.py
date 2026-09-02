@@ -1,9 +1,11 @@
 """
 CurveMerger - 曲线合并模块
-规格书第21-23章:
+规格书第21-23章 + V2.1 (ChatGPT审查意见):
 - G0连续: 终点与下一段起点重合，允许误差0.01mm
-- G1连续: 相邻曲线切线方向尽量一致，默认角度误差≤3°
-- 曲线合并: 如果G0连续且切线夹角<3°，合并成单条连续Spline
+- G1连续: 相邻曲线切线方向夹角 ≤ 3°
+- V2.1: 支持4种端点组合 + 自动翻转方向:
+  A.end→B.start / A.end→B.end / A.start→B.start / A.start→B.end
+  必要时 reverse(B) 后再判断 G0/G1
 """
 import numpy as np
 
@@ -13,127 +15,195 @@ class CurveMerger:
         self.g0_tolerance_mm = g0_tolerance_mm
         self.g1_angle_deg = g1_angle_deg
 
+    # =====================================================================
+    # 切线工具（基于段序列）
+    # =====================================================================
+    @staticmethod
+    def _seg_start_tangent(seg):
+        p0 = np.array(seg["p0"])
+        p1 = np.array(seg["p1"])
+        t = p1 - p0
+        n = np.linalg.norm(t)
+        return t / n if n > 0 else t
+
+    @staticmethod
+    def _seg_end_tangent(seg):
+        p2 = np.array(seg["p2"])
+        p3 = np.array(seg["p3"])
+        t = p3 - p2
+        n = np.linalg.norm(t)
+        return t / n if n > 0 else t
+
+    @classmethod
+    def _seq_start_tangent(cls, segments):
+        return cls._seg_start_tangent(segments[0])
+
+    @classmethod
+    def _seq_end_tangent(cls, segments):
+        return cls._seg_end_tangent(segments[-1])
+
+    @staticmethod
+    def _tangent_angle(t1, t2):
+        cos_angle = np.clip(np.dot(t1, t2), -1.0, 1.0)
+        return abs(np.degrees(np.arccos(cos_angle)))
+
+    @staticmethod
+    def _reverse_segments(segments):
+        """翻转段序列方向（段序反转 + 每段起终点互换）"""
+        new = []
+        for seg in reversed(segments):
+            new.append({
+                "p0": seg["p3"], "p1": seg["p2"],
+                "p2": seg["p1"], "p3": seg["p0"],
+            })
+        return new
+
+    # =====================================================================
+    # 兼容旧接口
+    # =====================================================================
     def check_g0(self, curve_a, curve_b):
-        """检查G0连续：曲线A终点 == 曲线B起点（允许误差）"""
         a_end = np.array(curve_a["segments"][-1]["p3"])
         b_start = np.array(curve_b["segments"][0]["p0"])
         d = np.linalg.norm(a_end - b_start)
         return d <= self.g0_tolerance_mm, round(float(d), 6)
 
     def check_g1(self, curve_a, curve_b):
-        """检查G1连续：A终点切线方向与B起点切线方向夹角≤阈值"""
-        a_tangent = self._end_tangent(curve_a)
-        b_tangent = self._start_tangent(curve_b)
+        a_tangent = self._seq_end_tangent(curve_a["segments"])
+        b_tangent = self._seq_start_tangent(curve_b["segments"])
         angle = self._tangent_angle(a_tangent, b_tangent)
         return angle <= self.g1_angle_deg, round(float(angle), 3)
 
-    def _end_tangent(self, curve):
-        """曲线终点切线方向"""
-        last = curve["segments"][-1]
-        p2 = np.array(last["p2"])
-        p3 = np.array(last["p3"])
-        t = p3 - p2
-        n = np.linalg.norm(t)
-        return t / n if n > 0 else t
-
-    def _start_tangent(self, curve):
-        """曲线起点切线方向"""
-        first = curve["segments"][0]
-        p0 = np.array(first["p0"])
-        p1 = np.array(first["p1"])
-        t = p1 - p0
-        n = np.linalg.norm(t)
-        return t / n if n > 0 else t
-
-    def _tangent_angle(self, t1, t2):
-        """两个切线方向的夹角（度）"""
-        cos_angle = np.clip(np.dot(t1, t2), -1.0, 1.0)
-        angle_rad = np.arccos(cos_angle)
-        return abs(np.degrees(angle_rad))
-
+    # =====================================================================
+    # V2.1 合并（4种端点组合 + 自动翻转）
+    # =====================================================================
     def merge(self, curves):
         """
-        合并连续曲线
+        合并连续曲线（V2.1: 支持自动翻转方向）
         curves: [{"id", "segments": [...]}, ...]
         返回: [{"id", "boundary_ids", "segments", "closed", "type": "merged"}, ...]
         """
         if not curves:
             return []
 
-        # 为每条曲线计算起点和终点
-        curve_ends = []
+        # 预计算每条曲线的 segments（可能是空）
+        items = []
         for c in curves:
-            start = np.array(c["segments"][0]["p0"])
-            end = np.array(c["segments"][-1]["p3"])
-            curve_ends.append({"curve": c, "start": start, "end": end, "used": False})
-
-        merged_groups = []
-
-        # 贪心合并：找与当前组终点最近的未使用曲线
-        for i, ce in enumerate(curve_ends):
-            if ce["used"]:
+            segs = c.get("segments") or []
+            if not segs:
                 continue
-            group = [ce["curve"]]
-            ce["used"] = True
-            current_end = ce["end"]
+            items.append({
+                "id": c["id"],
+                "normal": segs,
+                "flipped": self._reverse_segments(segs),
+                "used": False,
+            })
 
-            # 不断尝试延伸当前组
+        merged_groups = []  # 每个是 (segments列表, boundary_ids列表)
+
+        for idx, item in enumerate(items):
+            if item["used"]:
+                continue
+            group_segs = list(item["normal"])
+            group_ids = [item["id"]]
+            item["used"] = True
+
             extended = True
             while extended:
                 extended = False
-                best_idx = None
+                best_action = None  # (mode, other_item, use_flip, dist)
                 best_dist = self.g0_tolerance_mm
-                for j, other in enumerate(curve_ends):
+
+                cur_start = self._first_pt(group_segs)
+                cur_end = self._last_pt(group_segs)
+                cur_start_tangent = self._seq_start_tangent(group_segs)
+                cur_end_tangent = self._seq_end_tangent(group_segs)
+
+                for other in items:
                     if other["used"]:
                         continue
-                    d = np.linalg.norm(current_end - other["start"])
-                    if d <= best_dist:
-                        # 检查G1连续性
-                        g1_ok, _ = self.check_g1({"segments": self._group_segments(group)}, other["curve"])
-                        if g1_ok:
-                            best_idx = j
-                            best_dist = d
+                    normal = other["normal"]
+                    flipped = other["flipped"]
+                    n_start = self._first_pt(normal)
+                    n_end = self._last_pt(normal)
+                    n_start_tan = self._seq_start_tangent(normal)
+                    n_end_tan = self._seq_end_tangent(normal)
+                    # flipped 的 start/end 切线 = 原 end/start 的反向
+                    f_start_tan = -n_end_tan
+                    f_end_tan = -n_start_tan
 
-                if best_idx is not None:
-                    group.append(curve_ends[best_idx]["curve"])
-                    curve_ends[best_idx]["used"] = True
-                    current_end = curve_ends[best_idx]["end"]
+                    # 4种连接方式
+                    candidates = []
+                    # 1. append normal: group.end → other.start
+                    d = np.linalg.norm(cur_end - n_start)
+                    if d <= best_dist and self._g1_ok(cur_end_tangent, n_start_tan):
+                        candidates.append(("append", other, False, d))
+                    # 2. append flipped: group.end → other.end
+                    d = np.linalg.norm(cur_end - n_end)
+                    if d <= best_dist and self._g1_ok(cur_end_tangent, f_start_tan):
+                        candidates.append(("append", other, True, d))
+                    # 3. prepend normal: other.end → group.start
+                    d = np.linalg.norm(n_end - cur_start)
+                    if d <= best_dist and self._g1_ok(n_end_tan, cur_start_tangent):
+                        candidates.append(("prepend", other, False, d))
+                    # 4. prepend flipped: flipped.end(原start) → group.start
+                    d = np.linalg.norm(n_start - cur_start)
+                    if d <= best_dist and self._g1_ok(f_end_tan, cur_start_tangent):
+                        candidates.append(("prepend", other, True, d))
+
+                    for cand in candidates:
+                        if cand[3] < best_dist or (
+                                cand[3] <= best_dist and best_action is None):
+                            best_action = cand
+                            best_dist = cand[3]
+
+                if best_action is not None:
+                    mode, other, use_flip, dist = best_action
+                    segs = other["flipped"] if use_flip else other["normal"]
+                    if mode == "append":
+                        group_segs.extend(segs)
+                        group_ids.append(other["id"])
+                    else:  # prepend
+                        group_segs = segs + group_segs
+                        group_ids.insert(0, other["id"])
+                    other["used"] = True
                     extended = True
 
-            merged_groups.append(group)
+            merged_groups.append((group_segs, group_ids))
 
         # 生成合并后的曲线
         result = []
-        for gi, group in enumerate(merged_groups):
-            if not group:
+        for gi, (segs, ids) in enumerate(merged_groups):
+            if not segs:
                 continue
-            all_segments = []
-            boundary_ids = []
-            for c in group:
-                all_segments.extend(c["segments"])
-                boundary_ids.append(c["id"])
-
-            # 判断是否闭合
             closed = False
-            if len(all_segments) > 1:
-                start_pt = np.array(all_segments[0]["p0"])
-                end_pt = np.array(all_segments[-1]["p3"])
-                if np.linalg.norm(start_pt - end_pt) <= 0.05:  # 0.05mm阈值
+            if len(segs) > 1:
+                start_pt = self._first_pt(segs)
+                end_pt = self._last_pt(segs)
+                if np.linalg.norm(start_pt - end_pt) <= 0.05:
                     closed = True
-
             result.append({
                 "id": f"G{gi:03d}",
-                "boundary_ids": boundary_ids,
-                "segments": all_segments,
+                "boundary_ids": ids,
+                "segments": segs,
                 "closed": closed,
                 "type": "merged_bezier",
-                "segment_count": len(all_segments),
+                "segment_count": len(segs),
             })
 
         return result
 
+    def _g1_ok(self, t1, t2):
+        return self._tangent_angle(t1, t2) <= self.g1_angle_deg
+
+    @staticmethod
+    def _first_pt(segments):
+        return np.array(segments[0]["p0"])
+
+    @staticmethod
+    def _last_pt(segments):
+        return np.array(segments[-1]["p3"])
+
     def _group_segments(self, group):
-        """收集一组曲线的所有段"""
         segments = []
         for c in group:
             segments.extend(c["segments"])

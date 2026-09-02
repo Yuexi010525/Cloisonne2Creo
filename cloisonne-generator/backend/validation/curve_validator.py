@@ -1,10 +1,11 @@
 """
 CurveValidator - 曲线工程验证模块
-规格书第26-30章:
-- 最小线间距检查
+规格书第26-30章 + V2.1 (ChatGPT审查意见):
+- 最小线间距检查: 改为 Curve-Curve 真几何距离 (Shapely distance)
 - 最小曲率半径检查
-- 自交检查
+- 自交检查: 改为 LineString.is_simple 真几何检测
 - 线条拓扑检查（Boundary Graph）
+V2.1: 不再用"采样点距离"冒充"曲线距离"，避免假阳性/假阴性
 """
 import numpy as np
 
@@ -76,7 +77,7 @@ class CurveValidator:
             "intersections": [],
         }
 
-        # 1. 最小曲率半径检查
+        # 1. 最小曲率半径检查（保留采样法，曲率有数学定义）
         for c in curves:
             for si, seg in enumerate(c["segments"]):
                 for i in range(samples_per_seg + 1):
@@ -94,63 +95,68 @@ class CurveValidator:
                                     "radius_mm": round(radius, 4),
                                 })
 
-        # 2. 曲线间最小间距检查（空间哈希网格，避免O(n²)）
-        # 只检查不同曲线之间的邻近点对
-        cell_size = max(self.min_spacing_mm, 0.5)  # 网格单元大小
-        grid = {}  # (gx, gy) -> [(curve_id, point)]
-        spacing_violated_pairs = set()  # 记录 (curve_a, curve_b) 已报冲突
-
+        # 2. V2.1: 用Shapely构建每条曲线的LineString做真几何检测
+        from shapely.geometry import LineString
+        line_map = {}
         for c in curves:
+            pts = []
             for si, seg in enumerate(c["segments"]):
-                for i in range(samples_per_seg + 1):
-                    t = i / samples_per_seg
-                    pt = self._bezier_point(seg, t)
-                    gx = int(pt[0] // cell_size)
-                    gy = int(pt[1] // cell_size)
-                    grid.setdefault((gx, gy), []).append((c["id"], pt))
+                for i in range(20):  # 高密度采样构建折线
+                    t = i / 20
+                    pts.append((float(self._bezier_point(seg, t)[0]),
+                                float(self._bezier_point(seg, t)[1])))
+            # 去重连续重复点
+            dedup = []
+            for p in pts:
+                if not dedup or (abs(dedup[-1][0]-p[0]) > 1e-9 or
+                                 abs(dedup[-1][1]-p[1]) > 1e-9):
+                    dedup.append(p)
+            if len(dedup) >= 2:
+                try:
+                    line_map[c["id"]] = LineString(dedup)
+                except Exception:
+                    pass
 
-        # 检查相邻9个网格中的点对
-        checked = set()
-        for (gx, gy), points in grid.items():
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    ng = grid.get((gx + dx, gy + dy), [])
-                    for a_idx in range(len(points)):
-                        ca, pa = points[a_idx]
-                        for cb, pb in ng:
-                            if ca == cb:
-                                continue
-                            key = (ca, cb) if ca < cb else (cb, ca)
-                            if key in checked:
-                                continue
-                            d = np.linalg.norm(pa - pb)
-                            if d < self.min_spacing_mm:
-                                checked.add(key)
-                                result["spacing_violation_count"] += 1
-                                if len(result["spacing_violations"]) < 20:
-                                    result["spacing_violations"].append({
-                                        "curve_a": ca,
-                                        "curve_b": cb,
-                                        "distance_mm": round(float(d), 4),
-                                    })
-
-        # 3. 自交检查（曲线内部是否相交）
-        # 简化检查：同一条曲线内采样点是否出现重复/极近位置
+        # 3. V2.1: 自交检查（真几何：LineString.is_simple）
+        # 闭合环(is_simple=True)正常；蝴蝶结/自交叉(is_simple=False)报错
         for c in curves:
-            pts = [self._bezier_point(seg, t) for seg in c["segments"]
-                   for t in np.linspace(0, 1, 5)]
-            for i in range(len(pts)):
-                for j in range(i + 1, len(pts)):
-                    if j - i < 2:  # 跳过相邻点
-                        continue
-                    d = np.linalg.norm(pts[i] - pts[j])
-                    if d < 0.05:  # 0.05mm内视为自交
-                        result["intersection_count"] += 1
-                        if len(result["intersections"]) < 20:
-                            result["intersections"].append({
-                                "curve_id": c["id"],
-                                "point": [round(float(pts[i][0]), 3), round(float(pts[i][1]), 3)],
-                            })
+            line = line_map.get(c["id"])
+            if line is None or line.is_simple:
+                continue
+            result["intersection_count"] += 1
+            if len(result["intersections"]) < 20:
+                # 找自交点：曲线与自身的intersection中非端点部分
+                try:
+                    self_inter = line.intersection(line)
+                    pt = self._first_self_intersection_point(line, self_inter)
+                except Exception:
+                    pt = [round(float(line.coords[0][0]), 3),
+                          round(float(line.coords[0][1]), 3)]
+                result["intersections"].append({
+                    "curve_id": c["id"],
+                    "point": pt,
+                })
+
+        # 4. V2.1: 线距检查（Curve-Curve minimum distance，Shapely）
+        ids = list(line_map.keys())
+        for i in range(len(ids)):
+            la = line_map[ids[i]]
+            for j in range(i + 1, len(ids)):
+                lb = line_map[ids[j]]
+                try:
+                    if la.intersects(lb):
+                        continue  # 相交（T型连接点）不算线距冲突
+                    d = la.distance(lb)
+                except Exception:
+                    continue
+                if d < self.min_spacing_mm:
+                    result["spacing_violation_count"] += 1
+                    if len(result["spacing_violations"]) < 20:
+                        result["spacing_violations"].append({
+                            "curve_a": ids[i],
+                            "curve_b": ids[j],
+                            "distance_mm": round(float(d), 4),
+                        })
 
         # 状态判定
         result["status"] = "ok"
@@ -163,6 +169,23 @@ class CurveValidator:
             result["status"] = "warning"
 
         return result
+
+    def _first_self_intersection_point(self, line, self_inter):
+        """找出自交点的近似坐标（曲线自身上非首尾的交点）"""
+        try:
+            from shapely.geometry import Point
+            # 自交点 = 与自身重叠/交叉的点；取非端点处的交点
+            for geom in getattr(self_inter, "geoms", [self_inter]):
+                if geom.geom_type in ("Point",):
+                    return [round(float(geom.x), 3), round(float(geom.y), 3)]
+                if geom.geom_type == "MultiPoint":
+                    for g in geom.geoms:
+                        return [round(float(g.x), 3), round(float(g.y), 3)]
+            # 兜底：返回曲线的中间点
+            mid = line.interpolate(line.length / 2)
+            return [round(float(mid.x), 3), round(float(mid.y), 3)]
+        except Exception:
+            return [0.0, 0.0]
 
     def build_boundary_graph(self, curves):
         """

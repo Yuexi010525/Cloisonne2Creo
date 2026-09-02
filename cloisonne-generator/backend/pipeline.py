@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 import base64
 import tempfile
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -95,14 +96,40 @@ class CloisonnePipeline:
             palette.append({"id": r["id"], "hex": hex_color, "rgb": rgb})
         self.segmenter.segment(self.vtracer.label_map, palette)
 
-        # ========== Phase 3: 公共边界提取（核心自研算法） ==========
+        # ========== Phase 3: 公共边界提取（V2.1 矢量几何核心） ==========
+        # V2.1: 用Shapely在矢量几何上求 boundary(A) ∩ boundary(B)
+        # 建立 vtracer_id → segmenter_id 映射（区域过滤后重编号）
+        vt_label = self.vtracer.label_map
+        seg_label = self.segmenter.label_map
+        h_seg, w_seg = seg_label.shape
+        vt2seg = {}
+        for yy in range(h_seg):
+            for xx in range(w_seg):
+                vi = vt_label[yy, xx]
+                si = seg_label[yy, xx]
+                if vi >= 0 and si >= 0:
+                    vt2seg.setdefault(int(vi), set()).add(int(si))
+        # 每个vtracer region映射到出现最多的segmenter id
+        region_id_map = {}
+        for vi, sis in vt2seg.items():
+            counts = defaultdict(int)
+            for si in sis:
+                counts[si] += 1
+            region_id_map[vi] = max(counts, key=counts.get)
+
+        # 过滤后仍有效的vtracer region（对应segmenter有效区域）
+        valid_vi = set()
+        for vi, si in region_id_map.items():
+            # si 在 segmenter.regions 中存在即为有效
+            if any(r["id"] == si for r in self.segmenter.regions):
+                valid_vi.add(vi)
+
         self.boundary_extractor = SharedBoundaryExtractor(
             scale=scale, min_boundary_length_mm=min_boundary_length_mm)
-        self.boundary_extractor.extract(self.segmenter.regions, self.segmenter.label_map)
-
-        # 外轮廓提取（规格书四十一章: 是否生成外轮廓）
-        if gen_outline:
-            self.boundary_extractor.extract_outline(self.segmenter.regions, self.segmenter.label_map)
+        self.boundary_extractor.extract_vector(
+            self.vtracer.regions, self.vtracer.height,
+            valid_region_ids=valid_vi, region_id_map=region_id_map,
+            outline=gen_outline, label_map=self.vtracer.label_map)
 
         # ========== Phase 4: 曲线简化 + Bezier拟合 ==========
         # 平滑参数：smoothness 0~1，控制拟合容差（越大越平滑）
