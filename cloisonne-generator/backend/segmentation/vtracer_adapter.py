@@ -1,0 +1,203 @@
+"""
+VTracerAdapter - VTracer开源矢量化引擎适配器
+规格书V2.0:
+- VTracer负责"图片→颜色区域→初始矢量曲线"，不重写
+- 参数: clustering=color-cluster, hierarchical=cutout, mode=spline
+- 从VTracer SVG中解析出颜色区域，生成label_map供SharedBoundary使用
+"""
+import io
+import re
+import numpy as np
+import cv2
+import vtracer
+
+
+class VTracerAdapter:
+    def __init__(self, color_precision=6, filter_speckle=4,
+                 mode="spline", hierarchical="cutout", colormode="color"):
+        self.color_precision = color_precision
+        self.filter_speckle = filter_speckle
+        self.mode = mode
+        self.hierarchical = hierarchical
+        self.colormode = colormode
+        self.svg = None
+        self.regions = []       # [{id, color, path, segments, area_px, ...}]
+        self.label_map = None   # (H, W) 每个像素的区域ID
+        self.width = 0
+        self.height = 0
+
+    def convert(self, img_bytes, img_format="png"):
+        """
+        调用VTracer将图片转为SVG
+        返回SVG字符串
+        """
+        self.svg = vtracer.convert_raw_image_to_svg(
+            img_bytes,
+            img_format=img_format,
+            colormode=self.colormode,
+            hierarchical=self.hierarchical,
+            mode=self.mode,
+            filter_speckle=self.filter_speckle,
+            color_precision=self.color_precision,
+        )
+        # 从SVG中读取宽高
+        m = re.search(r'width="(\d+)" height="(\d+)"', self.svg)
+        if m:
+            self.width = int(m.group(1))
+            self.height = int(m.group(2))
+        return self.svg
+
+    def parse_regions(self):
+        """
+        用svgpathtools解析SVG中的path，建立颜色区域信息
+        注意: VTracer会用transform="translate(...)"定位path，必须用文件方式
+        让svgpathtools正确应用transform（StringIO方式会忽略transform）
+        返回: regions列表 + label_map
+        """
+        import svgpathtools
+        import tempfile
+        import os
+
+        # 写入临时文件以让svgpathtools正确处理transform
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".svg", delete=False, mode="w", encoding="utf-8") as tmp:
+                tmp.write(self.svg)
+                tmp_path = tmp.name
+            paths, attributes = svgpathtools.svg2paths(tmp_path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        self.regions = []
+        for i, (path, attrs) in enumerate(zip(paths, attributes)):
+            fill = attrs.get("fill", "#000000")
+            # 清理颜色格式
+            if fill.startswith("url("):
+                fill = "#000000"
+            if len(fill) == 4:  # 缩写 #RGB -> #RRGGBB
+                fill = "#" + "".join(c * 2 for c in fill[1:])
+
+            # 解析transform（VTracer用translate(tx,ty)定位path）
+            tx, ty = self._parse_transform(attrs.get("transform", ""))
+
+            # 采样path得到轮廓点，并应用transform偏移
+            contour_pts = self._path_to_contour(path)
+            if tx != 0 or ty != 0:
+                contour_pts = contour_pts + np.array([tx, ty])
+            if len(contour_pts) < 3:
+                continue
+
+            # 判断闭合
+            closed = np.linalg.norm(contour_pts[0] - contour_pts[-1]) < 1.0
+
+            # 计算面积（用闭合轮廓）
+            area = self._contour_area(contour_pts)
+
+            self.regions.append({
+                "id": i,
+                "color": fill,
+                "path": path,
+                "segments": list(path),
+                "closed": bool(closed),
+                "area_px": area,
+                "contour_pts": contour_pts,
+                "transform": [tx, ty],
+            })
+
+        # 生成label_map：把每个path渲染到画布上
+        self._build_label_map()
+        return self.regions
+
+    def _parse_transform(self, transform_str):
+        """
+        解析SVG transform字符串
+        VTracer使用 translate(tx,ty) 格式，返回 (tx, ty)
+        """
+        if not transform_str:
+            return (0.0, 0.0)
+        import re
+        m = re.search(r"translate\(\s*([-\d.]+)\s*[, ]\s*([-\d.]+)\s*\)", transform_str)
+        if m:
+            return (float(m.group(1)), float(m.group(2)))
+        # 处理单参数 translate(tx)
+        m = re.search(r"translate\(\s*([-\d.]+)\s*\)", transform_str)
+        if m:
+            return (float(m.group(1)), 0.0)
+        return (0.0, 0.0)
+
+    def _path_to_contour(self, path, samples_per_seg=5):
+        """将svgpathtools path采样为轮廓点"""
+        pts = []
+        for seg in path:
+            for i in range(samples_per_seg):
+                t = i / samples_per_seg
+                pt = seg.point(t)
+                pts.append([float(pt.real), float(pt.imag)])
+        return np.array(pts)
+
+    def _contour_area(self, pts):
+        """用鞋带公式计算多边形面积"""
+        x = pts[:, 0]
+        y = pts[:, 1]
+        area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+        return float(area)
+
+    def _build_label_map(self):
+        """把每个区域渲染到画布，生成label_map
+        使用已应用transform的contour_pts，避免fillPoly坐标错误"""
+        h, w = self.height, self.width
+        self.label_map = np.full((h, w), -1, dtype=np.int32)
+
+        for region in self.regions:
+            # 使用已应用transform的轮廓点
+            pts = region["contour_pts"]
+            # clip到画布内
+            pts_clipped = np.clip(pts, 0, [w, h])
+            poly = pts_clipped.astype(np.int32).reshape(-1, 1, 2)
+
+            mask = np.zeros((h, w), dtype=np.uint8)
+            try:
+                cv2.fillPoly(mask, [poly], 255)
+            except cv2.error:
+                continue
+
+            # 用该区域的ID填充label_map
+            self.label_map[mask == 255] = region["id"]
+
+        # 重新编号为连续ID（可能有空洞）
+        unique_ids = np.unique(self.label_map[self.label_map >= 0])
+        remap = {old: new for new, old in enumerate(sorted(unique_ids))}
+        new_labels = np.full_like(self.label_map, -1)
+        for old, new in remap.items():
+            new_labels[self.label_map == old] = new
+        self.label_map = new_labels
+
+        # 更新区域ID
+        for r in self.regions:
+            r["id"] = int(remap.get(r["id"], r["id"]))
+
+    def get_region_image(self):
+        """生成区域着色预览图（RGB）"""
+        h, w = self.height, self.width
+        img = np.full((h, w, 3), 255, dtype=np.uint8)
+        rng = np.random.RandomState(42)
+        colors = rng.randint(50, 255, (len(self.regions), 3))
+        for r in self.regions:
+            img[self.label_map == r["id"]] = colors[r["id"] % len(colors)]
+        return img
+
+    def get_color_map(self):
+        """返回每个颜色ID对应的RGB颜色（用于调色板）"""
+        color_map = {}
+        for r in self.regions:
+            hex_color = r["color"]
+            try:
+                rgb = [int(hex_color[i:i+2], 16) for i in (1, 3, 5)]
+            except ValueError:
+                rgb = [0, 0, 0]
+            color_map[r["id"]] = rgb
+        return color_map

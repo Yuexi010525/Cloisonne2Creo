@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100.0mm" height="100.0mm" viewBox="0 0 100.0 100.0" version="1.1">
+
+  <defs>
+    <style>
+      .region-fill { fill-opacity: 0.3; stroke: none; }
+      .boundary-raw { fill: none; stroke: #cccccc; stroke-width: 0.1; }
+      .final-wire { fill: none; stroke: #d4af37; stroke-width: 0.3; stroke-linecap: round; stroke-linejoin: round; }
+      .boundary-id { font-size: 1.5mm; fill: #666; font-family: sans-serif; }
+    </style>
+  </defs>
+
+  <g id="boundaries">
+    <polyline class="boundary-raw" points="50.0,66.6667 50.0,33.3333"/>
+    <polyline class="boundary-raw" points="50.0,66.6667 0.0,66.6667"/>
+    <polyline class="boundary-raw" points="50.4167,66.6667 99.5833,66.6667"/>
+    <polyline class="boundary-raw" points="0.0,33.3333 50.0,33.3333"/>
+    <polyline class="boundary-raw" points="50.4167,33.3333 99.5833,33.3333"/>
+  </g>
+  <g id="final-wire-curves">
+    <path class="final-wire" d="M 50.0 66.6667 C 50.0 55.55556666666667, 50.0 44.444433333333336, 50.0 33.3333" id="B000"/>
+    <text class="boundary-id" x="50.0" y="33.3333">B000</text>
+    <path class="final-wire" d="M 50.0 66.6667 C 33.33333333333333 66.6667, 16.666666666666664 66.6667, 0.0 66.6667" id="B001"/>
+    <text class="boundary-id" x="0.0" y="66.6667">B001</text>
+    <path class="final-wire" d="M 50.4167 66.6667 C 66.80556666666666 66.6667, 83.19443333333334 66.6667, 99.5833 66.6667" id="B002"/>
+    <text class="boundary-id" x="99.5833" y="66.6667">B002</text>
+    <path class="final-wire" d="M 0.0 33.3333 C 16.666666666666668 33.3333, 33.333333333333336 33.3333, 50.0 33.3333" id="B003"/>
+    <text class="boundary-id" x="50.0" y="33.3333">B003</text>
+    <path class="final-wire" d="M 50.4167 33.3333 C 66.80556666666666 33.3333, 83.19443333333334 33.3333, 99.5833 33.3333" id="B004"/>
+    <text class="boundary-id" x="99.5833" y="33.3333">B004</text>
+  </g>
+</svg>

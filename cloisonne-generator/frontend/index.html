@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>掐丝珐琅图片转 Creo 曲线生成器 V2.0</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>掐丝珐琅图片转 Creo 曲线生成器 <span class="version">V2.0</span></h1>
+  <div class="header-status">
+    <span id="status-text">就绪</span>
+    <span id="status-dot" class="status-dot ready"></span>
+  </div>
+</header>
+
+<div class="app-body">
+  <!-- 左侧参数区 -->
+  <aside class="panel params-panel">
+    <section class="param-group">
+      <h2>生成模式</h2>
+      <div class="mode-select">
+        <label class="mode-option">
+          <input type="radio" name="generate-mode" value="cloisonne" checked>
+          <span>掐丝珐琅</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="generate-mode" value="svg">
+          <span>普通SVG</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="generate-mode" value="outline">
+          <span>仅轮廓</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="param-group">
+      <h2>图片</h2>
+      <div id="drop-zone" class="drop-zone">
+        <p>拖拽图片到此处</p>
+        <p class="drop-hint">或</p>
+        <button id="btn-select-file" class="btn btn-secondary">选择文件</button>
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp,image/bmp" hidden>
+      </div>
+      <div id="file-info" class="file-info" style="display:none;">
+        <span id="file-name"></span>
+        <span id="file-dims"></span>
+      </div>
+    </section>
+
+    <section class="param-group">
+      <h2>参数预设</h2>
+      <div class="param-row">
+        <label for="preset-select">预设模板</label>
+        <select id="preset-select">
+          <option value="standard" selected>普通花纹</option>
+          <option value="high-precision">高精度细节</option>
+          <option value="fast-preview">快速预览</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="param-group">
+      <h2>颜色处理 (VTracer)</h2>
+      <div class="param-row">
+        <label for="color-precision">颜色精度</label>
+        <input type="number" id="color-precision" value="6" min="1" max="12" step="1">
+      </div>
+      <div class="param-row">
+        <label for="filter-speckle">斑点过滤</label>
+        <input type="number" id="filter-speckle" value="4" min="0" max="20" step="1">
+      </div>
+      <div class="param-row">
+        <label for="hierarchical">分区模式</label>
+        <select id="hierarchical">
+          <option value="cutout" selected>cutout (无缝分区)</option>
+          <option value="stacked">stacked (叠加)</option>
+        </select>
+      </div>
+      <div class="param-row">
+        <label for="curve-mode">曲线模式</label>
+        <select id="curve-mode">
+          <option value="spline" selected>spline (样条)</option>
+          <option value="polygon">polygon (多边形)</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="param-group">
+      <h2>工程参数</h2>
+      <div class="param-row">
+        <label for="output-width">输出宽度 (mm)</label>
+        <input type="number" id="output-width" value="100" min="10" max="1000" step="1">
+      </div>
+      <div class="param-row">
+        <label for="wire-diameter">线径 (mm)</label>
+        <input type="number" id="wire-diameter" value="0.6" min="0.2" max="2.0" step="0.05">
+      </div>
+      <div class="param-row">
+        <label for="min-spacing">最小线间距 (mm)</label>
+        <input type="number" id="min-spacing" value="0.8" min="0.2" max="5.0" step="0.1">
+      </div>
+      <div class="param-row">
+        <label for="min-region">最小区域面积 (mm²)</label>
+        <input type="number" id="min-region" value="2.0" min="0.1" max="50" step="0.5">
+      </div>
+      <div class="param-row">
+        <label for="min-boundary">最小边界长度 (mm)</label>
+        <input type="number" id="min-boundary" value="1.5" min="0.5" max="20" step="0.5">
+      </div>
+      <div class="param-row">
+        <label for="simplify-tol">曲线简化容差 (mm)</label>
+        <input type="number" id="simplify-tol" value="0.15" min="0.05" max="1.0" step="0.05">
+      </div>
+      <div class="param-row">
+        <label for="min-radius">最小曲率半径 (mm)</label>
+        <input type="number" id="min-radius" value="1.0" min="0.1" max="10" step="0.1">
+      </div>
+      <div class="param-row check-row">
+        <label for="gen-outline">生成外轮廓</label>
+        <input type="checkbox" id="gen-outline">
+      </div>
+      <div class="param-row">
+        <label for="smoothness">平滑 <span id="smoothness-val">70%</span></label>
+        <input type="range" id="smoothness" min="0" max="100" value="70" class="slider">
+      </div>
+    </section>
+
+    <section class="param-group actions">
+      <button id="btn-analyze" class="btn btn-primary" disabled>开始分析</button>
+      <button id="btn-export-svg" class="btn btn-success" disabled>导出 SVG</button>
+      <button id="btn-download-svg" class="btn btn-outline" disabled>下载 SVG 文件</button>
+      <button id="btn-download-dxf" class="btn btn-outline" disabled>下载 DXF</button>
+      <button id="btn-download-ibl" class="btn btn-outline" disabled>下载 IBL (Creo)</button>
+      <button id="btn-download-json" class="btn btn-outline" disabled>下载 JSON 项目</button>
+    </section>
+
+    <section class="param-group" id="result-summary" style="display:none;">
+      <h2>曲线检查面板</h2>
+      <div class="result-grid">
+        <div class="result-item"><span class="label">区域数</span><span id="res-regions" class="value">-</span></div>
+        <div class="result-item"><span class="label">边界数</span><span id="res-boundaries" class="value">-</span></div>
+        <div class="result-item"><span class="label">连续曲线组</span><span id="res-merged" class="value">-</span></div>
+        <div class="result-item"><span class="label">短边界</span><span id="res-short" class="value">-</span></div>
+        <div class="result-item"><span class="label">断线</span><span id="res-broken" class="value">-</span></div>
+        <div class="result-item"><span class="label">自交</span><span id="res-intersect" class="value">-</span></div>
+        <div class="result-item"><span class="label">线距冲突</span><span id="res-spacing" class="value">-</span></div>
+        <div class="result-item"><span class="label">小半径</span><span id="res-smallradius" class="value">-</span></div>
+      </div>
+      <div class="val-status" id="res-validation">验证状态: -</div>
+    </section>
+
+    <section class="param-group" id="color-interact" style="display:none;">
+      <h2>颜色交互 (点击高亮)</h2>
+      <div id="color-list" class="color-list"></div>
+      <div id="color-neighbors" class="color-neighbors"></div>
+    </section>
+  </aside>
+
+  <!-- 右侧预览区 -->
+  <main class="panel preview-panel">
+    <div class="preview-toolbar">
+      <h2>预览</h2>
+      <div class="layer-toggles">
+        <label><input type="checkbox" id="layer-original" checked> 原图</label>
+        <label><input type="checkbox" id="layer-regions" checked> 区域图</label>
+        <label><input type="checkbox" id="layer-boundaries"> 边界图</label>
+        <label><input type="checkbox" id="layer-svg" checked> 最终曲线</label>
+      </div>
+    </div>
+    <div class="preview-container" id="preview-container">
+      <div class="preview-placeholder" id="preview-placeholder">
+        <p>上传图片后点击"开始分析"</p>
+        <p class="placeholder-hint">支持 PNG / JPG / WEBP / BMP</p>
+      </div>
+      <div class="preview-stack" id="preview-stack" style="display:none;">
+        <img id="img-original" class="preview-layer" alt="原图">
+        <img id="img-regions" class="preview-layer" alt="区域图" style="display:none;">
+        <img id="img-boundaries" class="preview-layer" alt="边界图" style="display:none;">
+        <div id="svg-container" class="preview-layer svg-layer"></div>
+      </div>
+    </div>
+    <div class="preview-info" id="preview-info"></div>
+  </main>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

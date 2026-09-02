@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100.0mm" height="66.66666666666666mm" viewBox="0 0 100.0 66.66666666666666" version="1.1">
+
+  <defs>
+    <style>
+      .region-fill { fill-opacity: 0.3; stroke: none; }
+      .boundary-raw { fill: none; stroke: #cccccc; stroke-width: 0.1; }
+      .final-wire { fill: none; stroke: #d4af37; stroke-width: 0.3; stroke-linecap: round; stroke-linejoin: round; }
+      .boundary-id { font-size: 1.5mm; fill: #666; font-family: sans-serif; }
+    </style>
+  </defs>
+
+  <g id="boundaries">
+    <polyline class="boundary-raw" points="50.0,0.3333 50.0,66.6667"/>
+  </g>
+  <g id="final-wire-curves">
+    <path class="final-wire" d="M 50.0 0.3333 C 50.0 22.44443333333334, 50.0 44.55556666666668, 50.0 66.6667" id="B000"/>
+    <text class="boundary-id" x="50.0" y="66.6667">B000</text>
+  </g>
+</svg>
