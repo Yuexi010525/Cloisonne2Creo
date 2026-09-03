@@ -241,6 +241,28 @@ btnAnalyze.addEventListener('click', async () => {
   }
 });
 
+// 清除线稿调试图层 (binary/skeleton/pruned) — 防止上一张图数据残留
+function clearLineartLayers() {
+  const keys = ['binary', 'skeleton', 'pruned'];
+  keys.forEach(key => {
+    const target = layerImages[key];
+    if (!target) return;
+    target.removeAttribute('src');
+    target.style.display = 'none';
+  });
+}
+
+// 清除彩色图层 (regions/boundaries)
+function clearColorLayers() {
+  const keys = ['regions', 'boundaries'];
+  keys.forEach(key => {
+    const target = layerImages[key];
+    if (!target) return;
+    target.removeAttribute('src');
+    target.style.display = 'none';
+  });
+}
+
 // 渲染结果
 function renderResult(result) {
   console.group('[renderResult]');
@@ -261,8 +283,8 @@ function renderResult(result) {
       layerImages.original.src = URL.createObjectURL(currentFile);
       layerImages.original.style.display = 'block';
     }
-    layerImages.regions.style.display = 'none';
-    layerImages.boundaries.style.display = 'none';
+    clearColorLayers();
+    clearLineartLayers();
     svgContainer.style.display = 'block';
     svgContainer.innerHTML = result.svg;
     const svg = svgContainer.querySelector('svg');
@@ -364,9 +386,8 @@ function renderResult(result) {
       }
     }
 
-    // 隐藏彩色图层
-    layerImages.regions.style.display = 'none';
-    layerImages.boundaries.style.display = 'none';
+    // 隐藏彩色图层 (清除 src + display)
+    clearColorLayers();
 
     loadSvg();
 
@@ -418,6 +439,8 @@ function renderResult(result) {
     layerImages.original.src = URL.createObjectURL(currentFile);
     layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
   }
+  // 清除上一张图的线稿调试图层，防止残留
+  clearLineartLayers();
   if (result.preview_images) {
     if (result.preview_images.regions) {
       layerImages.regions.src = `data:image/png;base64,${result.preview_images.regions}`;
