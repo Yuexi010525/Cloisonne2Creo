@@ -278,6 +278,8 @@ async def get_svg():
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
     if isinstance(current_pipeline, CloisonnePipeline):
         svg = current_pipeline.get_svg()
+    elif hasattr(current_pipeline, "svg_content") and current_pipeline.svg_content:
+        svg = current_pipeline.svg_content
     elif hasattr(current_pipeline, "svg"):
         svg = current_pipeline.svg
     else:
@@ -292,6 +294,8 @@ async def download_svg():
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
     if isinstance(current_pipeline, CloisonnePipeline):
         svg = current_pipeline.get_svg()
+    elif hasattr(current_pipeline, "svg_content") and current_pipeline.svg_content:
+        svg = current_pipeline.svg_content
     elif hasattr(current_pipeline, "svg"):
         svg = current_pipeline.svg
     else:

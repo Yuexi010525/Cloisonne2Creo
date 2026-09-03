@@ -1,57 +1,71 @@
 @echo off
-title 掐丝珐琅图片转Creo曲线生成器 V2.0
+title Cloisonne2Creo V2.2
 echo ============================================
-echo   掐丝珐琅图片转 Creo 曲线生成器 V2.0
+echo   Cloisonne2Creo - V2.2 Line Art Engineering
 echo ============================================
 echo.
 
 cd /d "%~dp0"
 
-rem 定位Python: 优先完整路径Python 3.12(依赖都装在那里)
 set "PYTHON_CMD="
-set "P312=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python312\python.exe"
 
+rem Try Python 3.12 full path first (deps installed here)
+set "P312=C:\Users\%USERNAME%\AppData\Local\Programs\Python\Python312\python.exe"
 if exist "%P312%" (
     set "PYTHON_CMD=%P312%"
     goto :python_found
 )
 
+rem Try py launcher
 py -3.12 --version >nul 2>&1
 if not errorlevel 1 (
     set "PYTHON_CMD=py -3.12"
     goto :python_found
 )
 
+rem Try default python
 python --version >nul 2>&1
 if not errorlevel 1 (
     set "PYTHON_CMD=python"
     goto :python_found
 )
 
-echo [错误] 未找到Python，请先安装Python 3.9+
+echo [ERROR] Python not found. Please install Python 3.9+
+echo Download: https://www.python.org/downloads/
 pause
 exit /b 1
 
 :python_found
-echo [1/3] 使用Python: %PYTHON_CMD%
+echo [1/3] Python: %PYTHON_CMD%
 %PYTHON_CMD% --version
 
-echo [2/3] 检查依赖...
-%PYTHON_CMD% -c "import fastapi, uvicorn, cv2, numpy" >nul 2>&1
+echo [2/3] Checking dependencies...
+%PYTHON_CMD% -c "import fastapi, uvicorn, cv2, numpy, skimage, skan, shapely" >nul 2>&1
 if errorlevel 1 (
-    echo 正在安装依赖...
+    echo Installing dependencies (first run may take a few minutes)...
     %PYTHON_CMD% -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo [ERROR] Dependency install failed. Check your network.
+        pause
+        exit /b 1
+    )
+) else (
+    echo Dependencies OK.
 )
 
-echo [3/3] 启动服务器...
+echo [3/3] Starting server...
 echo.
-echo 服务器地址: http://127.0.0.1:8765
-echo 浏览器将自动打开，如未打开请手动访问
-echo 按 Ctrl+C 停止服务器
+echo ============================================
+echo   URL: http://127.0.0.1:8765
+echo   Browser will open automatically.
+echo   Press Ctrl+C to stop.
+echo ============================================
 echo.
 
 start "" "http://127.0.0.1:8765"
 
 %PYTHON_CMD% main.py
 
+echo.
+echo Server stopped.
 pause
