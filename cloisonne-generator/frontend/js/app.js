@@ -200,22 +200,41 @@ btnAnalyze.addEventListener('click', async () => {
   const selectedMode = document.querySelector('input[name="generate-mode"]:checked');
   formData.append('gen_mode', selectedMode ? selectedMode.value : 'auto');
 
+  let data;
+
   try {
     const response = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       body: formData,
+      cache: 'no-store',
     });
     if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || '分析失败');
+      let message = `HTTP ${response.status}`;
+      try {
+        const err = await response.json();
+        message = err.detail || message;
+      } catch (_) {}
+      throw new Error(`后端分析失败: ${message}`);
     }
-    currentResult = await response.json();
+    data = await response.json();
+  } catch (err) {
+    console.error('[API ERROR]', err);
+    setStatus('后端分析失败: ' + err.message, 'error');
+    previewInfo.textContent = '后端错误: ' + err.message;
+    isProcessing = false;
+    btnAnalyze.disabled = false;
+    return;
+  }
+
+  try {
+    currentResult = data;
     renderResult(currentResult);
     setStatus('分析完成', 'ready');
   } catch (err) {
-    console.error(err);
-    setStatus('分析失败: ' + err.message, 'error');
-    previewInfo.textContent = '错误: ' + err.message;
+    console.error('[RENDER ERROR]', err);
+    console.error('[RESULT DATA]', data);
+    setStatus('分析成功，但界面渲染失败', 'error');
+    previewInfo.textContent = '结果已返回，但前端显示失败: ' + err.message;
   } finally {
     isProcessing = false;
     btnAnalyze.disabled = false;
@@ -224,6 +243,14 @@ btnAnalyze.addEventListener('click', async () => {
 
 // 渲染结果
 function renderResult(result) {
+  console.group('[renderResult]');
+  console.log('mode =', result?.mode);
+  console.log('engine =', result?.engine);
+  console.log('keys =', result ? Object.keys(result) : null);
+  console.log('validation =', result?.validation);
+  console.log('strokes =', result?.strokes);
+  console.log('preview_images =', result?.preview_images);
+  console.groupEnd();
   // 检查是否为非掐丝模式（svg/outline直接返回原始SVG）
   if (result.mode === 'svg' || result.mode === 'outline') {
     resultSummary.style.display = 'none';
@@ -262,31 +289,51 @@ function renderResult(result) {
     lineartResultGrid.style.display = 'grid';
     colorInteract.style.display = 'none';
 
+    // 防御式默认值
     const ls = result.lineart_stats || {};
-    const v = result.validation;
-    document.getElementById('res-la-strokes').textContent = ls.raw_branch_count || result.strokes ? result.strokes.length : '-';
-    document.getElementById('res-la-branches').textContent = ls.branch_count || '-';
-    document.getElementById('res-la-junctions').textContent = ls.junction_count || '-';
-    document.getElementById('res-la-endpoints').textContent = ls.endpoint_count || '-';
-    document.getElementById('res-la-curves').textContent = ls.final_curve_count || '-';
-    document.getElementById('res-la-merged').textContent = ls.merged_curve_count || (result.merged_curves ? result.merged_curves.length : '-');
-    document.getElementById('res-la-hard').textContent = v.hard_collision_count || 0;
-    document.getElementById('res-la-dense').textContent = v.dense_spacing_warning_count || 0;
-    document.getElementById('res-la-intersect').textContent = v.self_intersection_count || v.intersection_count || 0;
-    document.getElementById('res-la-smallradius').textContent = v.small_radius_count || 0;
+    const v = result.validation || {};
+    const strokes = Array.isArray(result.strokes) ? result.strokes : [];
+    const branches = Array.isArray(result.branches) ? result.branches : [];
+    const junctions = Array.isArray(result.junctions) ? result.junctions : [];
+    const endpoints = Array.isArray(result.endpoints) ? result.endpoints : [];
+    const mergedCurves = Array.isArray(result.merged_curves) ? result.merged_curves : [];
+    const previewImages = result.preview_images || {};
+    const imageInfo = result.image_info || {};
+
+    // 统计多级 fallback: ls -> v -> 数组长度
+    const strokeCount = ls.raw_branch_count ?? v.raw_branch_count ?? strokes.length;
+    const branchCount = ls.branch_count ?? v.branch_count ?? branches.length;
+    const junctionCount = ls.junction_count ?? v.junction_count ?? junctions.length;
+    const endpointCount = ls.endpoint_count ?? v.endpoint_count ?? endpoints.length;
+    const finalCurveCount = ls.final_curve_count ?? v.final_curve_count ?? Object.keys(result.centerlines || {}).length;
+    const mergedCount = ls.merged_curve_count ?? v.merged_curve_count ?? mergedCurves.length;
+
+    document.getElementById('res-la-strokes').textContent = strokeCount;
+    document.getElementById('res-la-branches').textContent = branchCount;
+    document.getElementById('res-la-junctions').textContent = junctionCount;
+    document.getElementById('res-la-endpoints').textContent = endpointCount;
+    document.getElementById('res-la-curves').textContent = finalCurveCount;
+    document.getElementById('res-la-merged').textContent = mergedCount;
+    document.getElementById('res-la-hard').textContent = v.hard_collision_count ?? 0;
+    document.getElementById('res-la-dense').textContent = v.dense_spacing_warning_count ?? 0;
+    document.getElementById('res-la-intersect').textContent = v.self_intersection_count ?? v.intersection_count ?? 0;
+    document.getElementById('res-la-smallradius').textContent = v.small_radius_count ?? 0;
 
     const valStatus = document.getElementById('res-validation');
-    let valText = `验证状态: ${v.status === 'ok' ? '通过 ✓' : v.status === 'error' ? '错误 ✗' : '警告 ⚠'}`;
-    if (v.hard_collision_count > 0) valText += ` | 实体碰撞: ${v.hard_collision_count}`;
-    if (v.dense_spacing_warning_count > 0) valText += ` | 过密区域: ${v.dense_spacing_warning_count}`;
+    const statusText = v.status === 'ok' ? '通过 ✓' : v.status === 'error' ? '错误 ✗' : '警告 ⚠';
+    let valText = `验证状态: ${statusText}`;
+    if ((v.hard_collision_count ?? 0) > 0) valText += ` | 实体碰撞: ${v.hard_collision_count}`;
+    if ((v.dense_spacing_warning_count ?? 0) > 0) valText += ` | 过密区域: ${v.dense_spacing_warning_count}`;
     valStatus.textContent = valText;
-    valStatus.className = `val-status ${v.status}`;
+    valStatus.className = `val-status ${v.status || 'ok'}`;
 
     // 自动检测结果
     if (result.auto_detection) {
       autoDetectResult.style.display = 'block';
       const ad = result.auto_detection;
-      autoDetectResult.textContent = `自动检测: ${ad.mode === 'lineart' ? '黑白线稿' : '彩色图'} ${ad.stats ? '' : ''}`;
+      autoDetectResult.textContent = `自动检测: ${ad.mode === 'lineart' ? '黑白线稿' : '彩色图'}`;
+    } else {
+      autoDetectResult.style.display = 'none';
     }
 
     // 预览图
@@ -296,30 +343,40 @@ function renderResult(result) {
       layerImages.original.src = URL.createObjectURL(currentFile);
       layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
     }
-    // 线稿调试图层
-    if (result.preview_images) {
-      const laLayers = ['binary', 'skeleton', 'pruned_skeleton', 'final_curves'];
-      const laKeys = {binary: 'binary', skeleton: 'skeleton', pruned: 'pruned_skeleton'};
-      for (const [key, imgKey] of Object.entries(laKeys)) {
-        if (result.preview_images[imgKey]) {
-          layerImages[key].src = `data:image/png;base64,${result.preview_images[imgKey]}`;
-          layerImages[key].style.display = layerToggles[key].checked ? 'block' : 'none';
-        } else {
-          layerImages[key].style.display = 'none';
-        }
+
+    // 线稿调试图层 (防御式循环)
+    const debugImageMap = {
+      binary: 'binary',
+      skeleton: 'skeleton',
+      pruned: 'pruned_skeleton',
+    };
+    for (const [key, serverKey] of Object.entries(debugImageMap)) {
+      const target = layerImages[key];
+      if (!target) {
+        console.warn(`[LineArt] 缺少DOM元素: ${key}`);
+        continue;
+      }
+      if (previewImages[serverKey]) {
+        target.src = `data:image/png;base64,${previewImages[serverKey]}`;
+        target.style.display = layerToggles[key]?.checked ? 'block' : 'none';
+      } else {
+        target.style.display = 'none';
       }
     }
+
     // 隐藏彩色图层
     layerImages.regions.style.display = 'none';
     layerImages.boundaries.style.display = 'none';
 
     loadSvg();
 
+    const widthMm = imageInfo.output_width_mm ?? '-';
+    const heightMm = imageInfo.output_height_mm ?? '-';
     previewInfo.textContent =
-      `引擎: ${result.engine} (${v.graph_engine || 'skan'}) | ` +
-      `Stroke: ${ls.raw_branch_count || '-'} | Curve: ${ls.final_curve_count || '-'} | ` +
-      `合并: ${ls.merged_curve_count || '-'} | 碰撞: ${v.hard_collision_count || 0} | ` +
-      `过密: ${v.dense_spacing_warning_count || 0} | 输出: ${result.image_info.output_width_mm}×${result.image_info.output_height_mm}mm`;
+      `引擎: ${result.engine ?? '-'} (${v.graph_engine ?? 'skan'}) | ` +
+      `Stroke: ${strokeCount} | Curve: ${finalCurveCount} | ` +
+      `合并: ${mergedCount} | 碰撞: ${v.hard_collision_count ?? 0} | ` +
+      `过密: ${v.dense_spacing_warning_count ?? 0} | 输出: ${widthMm}×${heightMm}mm`;
 
     btnExportSvg.disabled = false;
     btnDownloadSvg.disabled = false;
@@ -531,6 +588,26 @@ function setStatus(text, type) {
   statusDot.className = `status-dot ${type}`;
 }
 
+// DOM ID 启动检查
+function checkRequiredDom() {
+  const required = [
+    'btn-analyze', 'result-summary', 'color-result-grid', 'lineart-result-grid',
+    'res-la-strokes', 'res-la-branches', 'res-la-junctions', 'res-la-endpoints',
+    'res-la-curves', 'res-la-merged', 'res-la-hard', 'res-la-dense',
+    'res-la-intersect', 'res-la-smallradius', 'res-validation',
+    'preview-info', 'svg-container', 'img-original',
+    'img-binary', 'img-skeleton', 'img-pruned',
+  ];
+  const missing = required.filter(id => !document.getElementById(id));
+  if (missing.length > 0) {
+    console.error('[DOM CHECK] Missing:', missing);
+    return false;
+  }
+  console.log('[DOM CHECK] OK');
+  return true;
+}
+
 // 初始化
 setStatus('请上传图片', 'ready');
+checkRequiredDom();
 updateModeUI();
