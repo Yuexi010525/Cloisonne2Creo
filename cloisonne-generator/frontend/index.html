@@ -238,19 +238,19 @@
         <p class="placeholder-hint">支持 PNG / JPG / WEBP / BMP</p>
       </div>
       <div class="preview-stack" id="preview-stack" style="display:none;">
-        <img id="img-original" class="preview-layer" alt="原图">
-        <img id="img-regions" class="preview-layer" alt="区域图" style="display:none;">
-        <img id="img-boundaries" class="preview-layer" alt="边界图" style="display:none;">
-        <img id="img-binary" class="preview-layer" alt="二值Mask" style="display:none;">
-        <img id="img-skeleton" class="preview-layer" alt="Skeleton" style="display:none;">
-        <img id="img-pruned" class="preview-layer" alt="修剪后" style="display:none;">
-        <div id="svg-container" class="preview-layer svg-layer"></div>
+        <img id="img-original" class="preview-layer" data-preview-layer="common" alt="原图">
+        <img id="img-regions" class="preview-layer" data-preview-layer="color" alt="区域图" style="display:none;">
+        <img id="img-boundaries" class="preview-layer" data-preview-layer="color" alt="边界图" style="display:none;">
+        <img id="img-binary" class="preview-layer" data-preview-layer="lineart" alt="二值Mask" style="display:none;">
+        <img id="img-skeleton" class="preview-layer" data-preview-layer="lineart" alt="Skeleton" style="display:none;">
+        <img id="img-pruned" class="preview-layer" data-preview-layer="lineart" alt="修剪后" style="display:none;">
+        <div id="svg-container" class="preview-layer svg-layer" data-preview-layer="svg"></div>
       </div>
     </div>
     <div class="preview-info" id="preview-info"></div>
   </main>
 </div>
 
-<script src="/static/js/app.js?v=20260903-02"></script>
+<script src="/static/js/app.js?v=20260903-03"></script>
 </body>
 </html>

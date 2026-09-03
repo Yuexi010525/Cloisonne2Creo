@@ -4,6 +4,7 @@ const API_BASE = '';
 let currentFile = null;
 let currentResult = null;
 let isProcessing = false;
+let analysisId = 0; // 分析请求序号，用于丢弃过期结果
 
 // DOM元素
 const dropZone = document.getElementById('drop-zone');
@@ -150,6 +151,8 @@ function handleFile(file) {
     setStatus('请选择图片文件', 'error');
     return;
   }
+  // V2.2.2: 选择新图片立即清除旧分析图层，避免误以为旧结果属于新图
+  clearPreviewForNewFile();
   currentFile = file;
   fileName.textContent = file.name;
   const img = new Image();
@@ -165,6 +168,7 @@ function handleFile(file) {
 // 分析按钮
 btnAnalyze.addEventListener('click', async () => {
   if (!currentFile || isProcessing) return;
+  const requestId = ++analysisId; // V2.2.2: 过期结果防护
   isProcessing = true;
   btnAnalyze.disabled = true;
   btnExportSvg.disabled = true;
@@ -218,11 +222,18 @@ btnAnalyze.addEventListener('click', async () => {
     }
     data = await response.json();
   } catch (err) {
+    if (requestId !== analysisId) return; // 过期请求，忽略
     console.error('[API ERROR]', err);
     setStatus('后端分析失败: ' + err.message, 'error');
     previewInfo.textContent = '后端错误: ' + err.message;
     isProcessing = false;
     btnAnalyze.disabled = false;
+    return;
+  }
+
+  // V2.2.2: 请求返回时若已有更新的分析，丢弃本结果防止旧数据覆盖
+  if (requestId !== analysisId) {
+    console.warn('[ANALYZE] 丢弃过期分析结果 requestId=' + requestId + ' current=' + analysisId);
     return;
   }
 
@@ -236,12 +247,16 @@ btnAnalyze.addEventListener('click', async () => {
     setStatus('分析成功，但界面渲染失败', 'error');
     previewInfo.textContent = '结果已返回，但前端显示失败: ' + err.message;
   } finally {
-    isProcessing = false;
-    btnAnalyze.disabled = false;
+    if (requestId === analysisId) {
+      isProcessing = false;
+      btnAnalyze.disabled = false;
+    }
   }
 });
 
-// 清除线稿调试图层 (binary/skeleton/pruned) — 防止上一张图数据残留
+// ===== V2.2.2 Frontend State Hygiene: 统一图层重置 =====
+
+// 清除线稿调试图层 (binary/skeleton/pruned)
 function clearLineartLayers() {
   const keys = ['binary', 'skeleton', 'pruned'];
   keys.forEach(key => {
@@ -263,7 +278,42 @@ function clearColorLayers() {
   });
 }
 
-// 渲染结果
+// 渲染入口统一清空：清除上一张图的一切可视化状态（V2.2.2）
+function resetAllPreviewLayers() {
+  // 按类型处理所有预览图层（img清src，其他清DOM）
+  document.querySelectorAll('.preview-layer').forEach(el => {
+    el.style.display = 'none';
+    if (el instanceof HTMLImageElement) {
+      el.removeAttribute('src');
+    } else {
+      el.replaceChildren();
+    }
+  });
+  // 结果面板
+  resultSummary.style.display = 'none';
+  colorResultGrid.style.display = 'none';
+  lineartResultGrid.style.display = 'none';
+  colorInteract.style.display = 'none';
+  autoDetectResult.style.display = 'none';
+  autoDetectResult.textContent = '';
+  // 预览区状态
+  previewInfo.textContent = '';
+  previewPlaceholder.style.display = '';
+  previewStack.style.display = 'none';
+}
+
+// 选择新图片时立即清除旧结果（V2.2.2）
+function clearPreviewForNewFile() {
+  resetAllPreviewLayers();
+  currentResult = null;
+  btnExportSvg.disabled = true;
+  btnDownloadSvg.disabled = true;
+  btnDownloadDxf.disabled = true;
+  btnDownloadIbl.disabled = true;
+  btnDownloadJson.disabled = true;
+}
+
+// ===== 渲染入口：先统一清空，再按模式分发 =====
 function renderResult(result) {
   console.group('[renderResult]');
   console.log('mode =', result?.mode);
@@ -273,144 +323,162 @@ function renderResult(result) {
   console.log('strokes =', result?.strokes);
   console.log('preview_images =', result?.preview_images);
   console.groupEnd();
-  // 检查是否为非掐丝模式（svg/outline直接返回原始SVG）
-  if (result.mode === 'svg' || result.mode === 'outline') {
-    resultSummary.style.display = 'none';
-    colorInteract.style.display = 'none';
-    previewPlaceholder.style.display = 'none';
-    previewStack.style.display = 'block';
-    if (currentFile) {
-      layerImages.original.src = URL.createObjectURL(currentFile);
-      layerImages.original.style.display = 'block';
-    }
-    clearColorLayers();
-    clearLineartLayers();
-    svgContainer.style.display = 'block';
-    svgContainer.innerHTML = result.svg;
-    const svg = svgContainer.querySelector('svg');
-    if (svg) {
-      svg.style.position = 'absolute';
-      svg.style.top = '0';
-      svg.style.left = '0';
-      svg.style.width = '100%';
-      svg.style.height = '100%';
-    }
-    previewInfo.textContent = `模式: ${result.mode === 'svg' ? '普通SVG' : '仅轮廓'} | 尺寸: ${result.image_info.width_px}×${result.image_info.height_px}px`;
-    btnExportSvg.disabled = false;
-    btnDownloadSvg.disabled = false;
-    btnDownloadDxf.disabled = true;
-    btnDownloadIbl.disabled = true;
-    btnDownloadJson.disabled = true;
-    return;
+
+  // V2.2.2: 渲染入口统一清空旧状态，各分支只负责渲染自己
+  resetAllPreviewLayers();
+
+  switch (result?.mode) {
+    case 'lineart':
+      renderLineartResult(result);
+      break;
+    case 'cloisonne':
+      renderColorResult(result);
+      break;
+    case 'svg':
+      renderSvgResult(result);
+      break;
+    case 'outline':
+      renderOutlineResult(result);
+      break;
+    default:
+      throw new Error(`未知结果模式: ${result?.mode}`);
+  }
+}
+
+// ---- SVG / Outline 分支 ----
+function renderSvgResult(result) {
+  renderSvgLikeResult(result, '普通SVG');
+}
+function renderOutlineResult(result) {
+  renderSvgLikeResult(result, '仅轮廓');
+}
+function renderSvgLikeResult(result, label) {
+  previewPlaceholder.style.display = 'none';
+  previewStack.style.display = 'block';
+  if (currentFile) {
+    layerImages.original.src = URL.createObjectURL(currentFile);
+    layerImages.original.style.display = 'block';
+  }
+  svgContainer.style.display = 'block';
+  svgContainer.innerHTML = result.svg;
+  const svg = svgContainer.querySelector('svg');
+  if (svg) {
+    svg.style.position = 'absolute';
+    svg.style.top = '0';
+    svg.style.left = '0';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+  }
+  previewInfo.textContent = `模式: ${label} | 尺寸: ${result.image_info.width_px}×${result.image_info.height_px}px`;
+  btnExportSvg.disabled = false;
+  btnDownloadSvg.disabled = false;
+  btnDownloadDxf.disabled = true;
+  btnDownloadIbl.disabled = true;
+  btnDownloadJson.disabled = true;
+}
+
+// ---- 线稿分支 ----
+function renderLineartResult(result) {
+  resultSummary.style.display = 'block';
+  lineartResultGrid.style.display = 'grid';
+  colorInteract.style.display = 'none';
+
+  // 防御式默认值
+  const ls = result.lineart_stats || {};
+  const v = result.validation || {};
+  const strokes = Array.isArray(result.strokes) ? result.strokes : [];
+  const branches = Array.isArray(result.branches) ? result.branches : [];
+  const junctions = Array.isArray(result.junctions) ? result.junctions : [];
+  const endpoints = Array.isArray(result.endpoints) ? result.endpoints : [];
+  const mergedCurves = Array.isArray(result.merged_curves) ? result.merged_curves : [];
+  const previewImages = result.preview_images || {};
+  const imageInfo = result.image_info || {};
+
+  // 统计多级 fallback: ls -> v -> 数组长度
+  const strokeCount = ls.raw_branch_count ?? v.raw_branch_count ?? strokes.length;
+  const branchCount = ls.branch_count ?? v.branch_count ?? branches.length;
+  const junctionCount = ls.junction_count ?? v.junction_count ?? junctions.length;
+  const endpointCount = ls.endpoint_count ?? v.endpoint_count ?? endpoints.length;
+  const finalCurveCount = ls.final_curve_count ?? v.final_curve_count ?? Object.keys(result.centerlines || {}).length;
+  const mergedCount = ls.merged_curve_count ?? v.merged_curve_count ?? mergedCurves.length;
+
+  document.getElementById('res-la-strokes').textContent = strokeCount;
+  document.getElementById('res-la-branches').textContent = branchCount;
+  document.getElementById('res-la-junctions').textContent = junctionCount;
+  document.getElementById('res-la-endpoints').textContent = endpointCount;
+  document.getElementById('res-la-curves').textContent = finalCurveCount;
+  document.getElementById('res-la-merged').textContent = mergedCount;
+  document.getElementById('res-la-hard').textContent = v.hard_collision_count ?? 0;
+  document.getElementById('res-la-dense').textContent = v.dense_spacing_warning_count ?? 0;
+  document.getElementById('res-la-intersect').textContent = v.self_intersection_count ?? v.intersection_count ?? 0;
+  document.getElementById('res-la-smallradius').textContent = v.small_radius_count ?? 0;
+
+  const valStatus = document.getElementById('res-validation');
+  const statusText = v.status === 'ok' ? '通过 ✓' : v.status === 'error' ? '错误 ✗' : '警告 ⚠';
+  let valText = `验证状态: ${statusText}`;
+  if ((v.hard_collision_count ?? 0) > 0) valText += ` | 实体碰撞: ${v.hard_collision_count}`;
+  if ((v.dense_spacing_warning_count ?? 0) > 0) valText += ` | 过密区域: ${v.dense_spacing_warning_count}`;
+  valStatus.textContent = valText;
+  valStatus.className = `val-status ${v.status || 'ok'}`;
+
+  // 自动检测结果
+  if (result.auto_detection) {
+    autoDetectResult.style.display = 'block';
+    const ad = result.auto_detection;
+    autoDetectResult.textContent = `自动检测: ${ad.mode === 'lineart' ? '黑白线稿' : '彩色图'}`;
+  } else {
+    autoDetectResult.style.display = 'none';
   }
 
-  // 线稿模式 (V2.2)
-  if (result.mode === 'lineart' || result.engine === 'lineart_skeleton') {
-    resultSummary.style.display = 'block';
-    colorResultGrid.style.display = 'none';
-    lineartResultGrid.style.display = 'grid';
-    colorInteract.style.display = 'none';
+  // 预览图
+  previewPlaceholder.style.display = 'none';
+  previewStack.style.display = 'block';
+  if (currentFile) {
+    layerImages.original.src = URL.createObjectURL(currentFile);
+    layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
+  }
 
-    // 防御式默认值
-    const ls = result.lineart_stats || {};
-    const v = result.validation || {};
-    const strokes = Array.isArray(result.strokes) ? result.strokes : [];
-    const branches = Array.isArray(result.branches) ? result.branches : [];
-    const junctions = Array.isArray(result.junctions) ? result.junctions : [];
-    const endpoints = Array.isArray(result.endpoints) ? result.endpoints : [];
-    const mergedCurves = Array.isArray(result.merged_curves) ? result.merged_curves : [];
-    const previewImages = result.preview_images || {};
-    const imageInfo = result.image_info || {};
-
-    // 统计多级 fallback: ls -> v -> 数组长度
-    const strokeCount = ls.raw_branch_count ?? v.raw_branch_count ?? strokes.length;
-    const branchCount = ls.branch_count ?? v.branch_count ?? branches.length;
-    const junctionCount = ls.junction_count ?? v.junction_count ?? junctions.length;
-    const endpointCount = ls.endpoint_count ?? v.endpoint_count ?? endpoints.length;
-    const finalCurveCount = ls.final_curve_count ?? v.final_curve_count ?? Object.keys(result.centerlines || {}).length;
-    const mergedCount = ls.merged_curve_count ?? v.merged_curve_count ?? mergedCurves.length;
-
-    document.getElementById('res-la-strokes').textContent = strokeCount;
-    document.getElementById('res-la-branches').textContent = branchCount;
-    document.getElementById('res-la-junctions').textContent = junctionCount;
-    document.getElementById('res-la-endpoints').textContent = endpointCount;
-    document.getElementById('res-la-curves').textContent = finalCurveCount;
-    document.getElementById('res-la-merged').textContent = mergedCount;
-    document.getElementById('res-la-hard').textContent = v.hard_collision_count ?? 0;
-    document.getElementById('res-la-dense').textContent = v.dense_spacing_warning_count ?? 0;
-    document.getElementById('res-la-intersect').textContent = v.self_intersection_count ?? v.intersection_count ?? 0;
-    document.getElementById('res-la-smallradius').textContent = v.small_radius_count ?? 0;
-
-    const valStatus = document.getElementById('res-validation');
-    const statusText = v.status === 'ok' ? '通过 ✓' : v.status === 'error' ? '错误 ✗' : '警告 ⚠';
-    let valText = `验证状态: ${statusText}`;
-    if ((v.hard_collision_count ?? 0) > 0) valText += ` | 实体碰撞: ${v.hard_collision_count}`;
-    if ((v.dense_spacing_warning_count ?? 0) > 0) valText += ` | 过密区域: ${v.dense_spacing_warning_count}`;
-    valStatus.textContent = valText;
-    valStatus.className = `val-status ${v.status || 'ok'}`;
-
-    // 自动检测结果
-    if (result.auto_detection) {
-      autoDetectResult.style.display = 'block';
-      const ad = result.auto_detection;
-      autoDetectResult.textContent = `自动检测: ${ad.mode === 'lineart' ? '黑白线稿' : '彩色图'}`;
+  // 线稿调试图层 (防御式循环)
+  const debugImageMap = {
+    binary: 'binary',
+    skeleton: 'skeleton',
+    pruned: 'pruned_skeleton',
+  };
+  for (const [key, serverKey] of Object.entries(debugImageMap)) {
+    const target = layerImages[key];
+    if (!target) {
+      console.warn(`[LineArt] 缺少DOM元素: ${key}`);
+      continue;
+    }
+    if (previewImages[serverKey]) {
+      target.src = `data:image/png;base64,${previewImages[serverKey]}`;
+      target.style.display = layerToggles[key]?.checked ? 'block' : 'none';
     } else {
-      autoDetectResult.style.display = 'none';
+      target.style.display = 'none';
     }
-
-    // 预览图
-    previewPlaceholder.style.display = 'none';
-    previewStack.style.display = 'block';
-    if (currentFile) {
-      layerImages.original.src = URL.createObjectURL(currentFile);
-      layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
-    }
-
-    // 线稿调试图层 (防御式循环)
-    const debugImageMap = {
-      binary: 'binary',
-      skeleton: 'skeleton',
-      pruned: 'pruned_skeleton',
-    };
-    for (const [key, serverKey] of Object.entries(debugImageMap)) {
-      const target = layerImages[key];
-      if (!target) {
-        console.warn(`[LineArt] 缺少DOM元素: ${key}`);
-        continue;
-      }
-      if (previewImages[serverKey]) {
-        target.src = `data:image/png;base64,${previewImages[serverKey]}`;
-        target.style.display = layerToggles[key]?.checked ? 'block' : 'none';
-      } else {
-        target.style.display = 'none';
-      }
-    }
-
-    // 隐藏彩色图层 (清除 src + display)
-    clearColorLayers();
-
-    loadSvg();
-
-    const widthMm = imageInfo.output_width_mm ?? '-';
-    const heightMm = imageInfo.output_height_mm ?? '-';
-    previewInfo.textContent =
-      `引擎: ${result.engine ?? '-'} (${v.graph_engine ?? 'skan'}) | ` +
-      `Stroke: ${strokeCount} | Curve: ${finalCurveCount} | ` +
-      `合并: ${mergedCount} | 碰撞: ${v.hard_collision_count ?? 0} | ` +
-      `过密: ${v.dense_spacing_warning_count ?? 0} | 输出: ${widthMm}×${heightMm}mm`;
-
-    btnExportSvg.disabled = false;
-    btnDownloadSvg.disabled = false;
-    btnDownloadDxf.disabled = !result.dxf_base64;
-    btnDownloadIbl.disabled = !result.ibl_text;
-    btnDownloadJson.disabled = false;
-    return;
   }
 
-  // 掐丝模式：曲线检查面板
+  loadSvg();
+
+  const widthMm = imageInfo.output_width_mm ?? '-';
+  const heightMm = imageInfo.output_height_mm ?? '-';
+  previewInfo.textContent =
+    `引擎: ${result.engine ?? '-'} (${v.graph_engine ?? 'skan'}) | ` +
+    `Stroke: ${strokeCount} | Curve: ${finalCurveCount} | ` +
+    `合并: ${mergedCount} | 碰撞: ${v.hard_collision_count ?? 0} | ` +
+    `过密: ${v.dense_spacing_warning_count ?? 0} | 输出: ${widthMm}×${heightMm}mm`;
+
+  btnExportSvg.disabled = false;
+  btnDownloadSvg.disabled = false;
+  btnDownloadDxf.disabled = !result.dxf_base64;
+  btnDownloadIbl.disabled = !result.ibl_text;
+  btnDownloadJson.disabled = false;
+}
+
+// ---- 彩色分支 ----
+function renderColorResult(result) {
   resultSummary.style.display = 'block';
   colorResultGrid.style.display = 'grid';
-  lineartResultGrid.style.display = 'none';
   document.getElementById('res-regions').textContent = result.regions.length;
   document.getElementById('res-boundaries').textContent = result.boundaries.length;
   document.getElementById('res-merged').textContent =
@@ -439,8 +507,6 @@ function renderResult(result) {
     layerImages.original.src = URL.createObjectURL(currentFile);
     layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
   }
-  // 清除上一张图的线稿调试图层，防止残留
-  clearLineartLayers();
   if (result.preview_images) {
     if (result.preview_images.regions) {
       layerImages.regions.src = `data:image/png;base64,${result.preview_images.regions}`;
@@ -547,6 +613,8 @@ async function loadSvg() {
     const resp = await fetch(`${API_BASE}/api/svg`);
     if (resp.ok) {
       const svgText = await resp.text();
+      // V2.2.2: 强制替换旧DOM，避免旧SVG残留叠加
+      svgContainer.replaceChildren();
       svgContainer.innerHTML = svgText;
       const svg = svgContainer.querySelector('svg');
       if (svg) {

@@ -239,6 +239,7 @@ async def analyze(
         # 返回不含大字段的摘要
         summary = {
             "engine": result["engine"],
+            "mode": "cloisonne",
             "image_info": result["image_info"],
             "color_palette": result["color_palette"],
             "regions": result["regions"],
