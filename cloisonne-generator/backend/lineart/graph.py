@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-SkeletonGraph - 骨架图提取
-规格书(V2.1线稿模式): 8邻域统计邻接数 (1=endpoint, 2=normal, >=3=junction),
-骨架 → Graph(Node/Edge) → ordered points Path。
-交叉处保留 Junction Node, 不强行合并。
-不自研图算法库, 用 NumPy 邻接扫描即可。
+LegacySkeletonGraph - 自研骨架图引擎 (V2.1, 保留作为 fallback)
+V2.2 默认使用 SkanSkeletonGraph (graph_skan.py), 本文件保留用于:
+  - Skan 导入失败时的 fallback
+  - A/B 对比测试
+  - 调试参考
+8邻域统计邻接数 (1=endpoint, 2=normal, >=3=junction)
 """
 import numpy as np
 from collections import deque
+
+# 兼容别名: V2.1 代码中使用 SkeletonGraph, V2.2 明确为 LegacySkeletonGraph
+LegacySkeletonGraph = None  # 占位, 类定义后赋值
 
 
 # 8 邻域偏移 (dy, dx)
@@ -180,3 +184,6 @@ class SkeletonGraph:
     def get_edge_points_xy(self, edge):
         """把 (y,x) points 转成 (x,y) 列表"""
         return [(float(p[1]), float(p[0])) for p in edge["points"]]
+
+# V2.2: 兼容别名
+LegacySkeletonGraph = SkeletonGraph

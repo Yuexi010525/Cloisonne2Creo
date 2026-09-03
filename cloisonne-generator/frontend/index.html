@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>掐丝珐琅图片转 Creo 曲线生成器 V2.0</title>
+<title>掐丝珐琅图片转 Creo 曲线生成器 V2.2</title>
 <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
 <header class="app-header">
-  <h1>掐丝珐琅图片转 Creo 曲线生成器 <span class="version">V2.0</span></h1>
+  <h1>掐丝珐琅图片转 Creo 曲线生成器 <span class="version">V2.2</span></h1>
   <div class="header-status">
     <span id="status-text">就绪</span>
     <span id="status-dot" class="status-dot ready"></span>
@@ -22,8 +22,16 @@
       <h2>生成模式</h2>
       <div class="mode-select">
         <label class="mode-option">
-          <input type="radio" name="generate-mode" value="cloisonne" checked>
-          <span>掐丝珐琅</span>
+          <input type="radio" name="generate-mode" value="auto" checked>
+          <span>自动检测</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="generate-mode" value="cloisonne">
+          <span>彩色掐丝</span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="generate-mode" value="lineart">
+          <span>黑白线稿</span>
         </label>
         <label class="mode-option">
           <input type="radio" name="generate-mode" value="svg">
@@ -34,6 +42,7 @@
           <span>仅轮廓</span>
         </label>
       </div>
+      <div id="auto-detect-result" class="auto-detect-result" style="display:none; margin-top:8px; font-size:13px; color:#666;"></div>
     </section>
 
     <section class="param-group">
@@ -62,7 +71,7 @@
       </div>
     </section>
 
-    <section class="param-group">
+    <section class="param-group" id="color-params">
       <h2>颜色处理 (VTracer)</h2>
       <div class="param-row">
         <label for="color-precision">颜色精度</label>
@@ -88,6 +97,44 @@
       </div>
     </section>
 
+    <section class="param-group" id="lineart-params" style="display:none;">
+      <h2>线稿参数 (V2.2)</h2>
+      <div class="param-row">
+        <label for="la-binary-threshold">二值阈值</label>
+        <select id="la-binary-threshold">
+          <option value="auto" selected>自动 (Otsu)</option>
+          <option value="128">128</option>
+          <option value="100">100</option>
+          <option value="80">80</option>
+        </select>
+      </div>
+      <div class="param-row">
+        <label for="la-denoise">去噪核 (px)</label>
+        <input type="number" id="la-denoise" value="3" min="0" max="9" step="2">
+      </div>
+      <div class="param-row">
+        <label for="la-spur">毛刺阈值 (mm)</label>
+        <input type="number" id="la-spur" value="0.8" min="0.2" max="3.0" step="0.1">
+      </div>
+      <div class="param-row check-row">
+        <label for="la-keep-fine">保留细小线段</label>
+        <input type="checkbox" id="la-keep-fine">
+      </div>
+      <div class="param-row">
+        <label for="la-skeleton">中心线算法</label>
+        <select id="la-skeleton">
+          <option value="skeletonize" selected>Skeletonize</option>
+        </select>
+      </div>
+      <div class="param-row">
+        <label for="la-graph-engine">Graph 引擎</label>
+        <select id="la-graph-engine">
+          <option value="skan" selected>Skan (推荐)</option>
+          <option value="legacy">Legacy</option>
+        </select>
+      </div>
+    </section>
+
     <section class="param-group">
       <h2>工程参数</h2>
       <div class="param-row">
@@ -99,7 +146,7 @@
         <input type="number" id="wire-diameter" value="0.6" min="0.2" max="2.0" step="0.05">
       </div>
       <div class="param-row">
-        <label for="min-spacing">最小线间距 (mm)</label>
+        <label for="min-spacing">推荐线间距 (mm)</label>
         <input type="number" id="min-spacing" value="0.8" min="0.2" max="5.0" step="0.1">
       </div>
       <div class="param-row">
@@ -139,7 +186,7 @@
 
     <section class="param-group" id="result-summary" style="display:none;">
       <h2>曲线检查面板</h2>
-      <div class="result-grid">
+      <div class="result-grid" id="color-result-grid">
         <div class="result-item"><span class="label">区域数</span><span id="res-regions" class="value">-</span></div>
         <div class="result-item"><span class="label">边界数</span><span id="res-boundaries" class="value">-</span></div>
         <div class="result-item"><span class="label">连续曲线组</span><span id="res-merged" class="value">-</span></div>
@@ -148,6 +195,18 @@
         <div class="result-item"><span class="label">自交</span><span id="res-intersect" class="value">-</span></div>
         <div class="result-item"><span class="label">线距冲突</span><span id="res-spacing" class="value">-</span></div>
         <div class="result-item"><span class="label">小半径</span><span id="res-smallradius" class="value">-</span></div>
+      </div>
+      <div class="result-grid" id="lineart-result-grid" style="display:none;">
+        <div class="result-item"><span class="label">Stroke数</span><span id="res-la-strokes" class="value">-</span></div>
+        <div class="result-item"><span class="label">Branch</span><span id="res-la-branches" class="value">-</span></div>
+        <div class="result-item"><span class="label">Junction</span><span id="res-la-junctions" class="value">-</span></div>
+        <div class="result-item"><span class="label">Endpoint</span><span id="res-la-endpoints" class="value">-</span></div>
+        <div class="result-item"><span class="label">最终Curve</span><span id="res-la-curves" class="value">-</span></div>
+        <div class="result-item"><span class="label">合并组</span><span id="res-la-merged" class="value">-</span></div>
+        <div class="result-item"><span class="label">实体碰撞</span><span id="res-la-hard" class="value">-</span></div>
+        <div class="result-item"><span class="label">过密警告</span><span id="res-la-dense" class="value">-</span></div>
+        <div class="result-item"><span class="label">自交</span><span id="res-la-intersect" class="value">-</span></div>
+        <div class="result-item"><span class="label">小半径</span><span id="res-la-smallradius" class="value">-</span></div>
       </div>
       <div class="val-status" id="res-validation">验证状态: -</div>
     </section>
@@ -165,8 +224,11 @@
       <h2>预览</h2>
       <div class="layer-toggles">
         <label><input type="checkbox" id="layer-original" checked> 原图</label>
-        <label><input type="checkbox" id="layer-regions" checked> 区域图</label>
-        <label><input type="checkbox" id="layer-boundaries"> 边界图</label>
+        <label class="layer-color"><input type="checkbox" id="layer-regions" checked> 区域图</label>
+        <label class="layer-color"><input type="checkbox" id="layer-boundaries"> 边界图</label>
+        <label class="layer-lineart" style="display:none;"><input type="checkbox" id="layer-binary"> 二值Mask</label>
+        <label class="layer-lineart" style="display:none;"><input type="checkbox" id="layer-skeleton"> Skeleton</label>
+        <label class="layer-lineart" style="display:none;"><input type="checkbox" id="layer-pruned"> 修剪后</label>
         <label><input type="checkbox" id="layer-svg" checked> 最终曲线</label>
       </div>
     </div>
@@ -179,6 +241,9 @@
         <img id="img-original" class="preview-layer" alt="原图">
         <img id="img-regions" class="preview-layer" alt="区域图" style="display:none;">
         <img id="img-boundaries" class="preview-layer" alt="边界图" style="display:none;">
+        <img id="img-binary" class="preview-layer" alt="二值Mask" style="display:none;">
+        <img id="img-skeleton" class="preview-layer" alt="Skeleton" style="display:none;">
+        <img id="img-pruned" class="preview-layer" alt="修剪后" style="display:none;">
         <div id="svg-container" class="preview-layer svg-layer"></div>
       </div>
     </div>

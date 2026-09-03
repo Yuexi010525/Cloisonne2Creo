@@ -60,14 +60,24 @@ async def analyze(
     simplify_tolerance_mm: float = Form(0.15),
     wire_diameter_mm: float = Form(0.6),
     min_wire_spacing_mm: float = Form(0.8),
+    recommended_spacing_mm: float = Form(0.8),
     min_radius_mm: float = Form(1.0),
     output_width_mm: float = Form(100.0),
     generate_mode: str = Form("cloisonne"),
+    gen_mode: str = Form(""),
     smoothness: float = Form(0.7),
     gen_outline: bool = Form(False),
+    # V2.2 线稿参数
+    binary_threshold: str = Form(""),
+    denoise_ksize: int = Form(3),
+    min_spur_length_mm: float = Form(0.8),
+    keep_fine_segments: bool = Form(False),
+    skeleton_method: str = Form("skeletonize"),
+    graph_engine: str = Form("skan"),
 ):
-    """V2.0分析管线：图片 -> VTracer -> 颜色区域 -> 公共边界 -> 曲线 -> 导出
-    generate_mode: cloisonne(掐丝珐琅) / svg(普通SVG) / outline(仅轮廓)"""
+    """V2.2分析管线
+    gen_mode: auto(自动检测) / cloisonne(彩色掐丝) / lineart(黑白线稿) / svg / outline
+    兼容旧参数 generate_mode"""
     global current_result, current_config, current_pipeline
 
     try:
@@ -79,6 +89,10 @@ async def analyze(
         if color_precision == 9:
             color_precision = 10
 
+        # 兼容新旧参数名
+        effective_mode = gen_mode if gen_mode else generate_mode
+        effective_spacing = recommended_spacing_mm if recommended_spacing_mm > 0 else min_wire_spacing_mm
+
         config = {
             "color_precision": max(1, min(12, color_precision)),
             "filter_speckle": max(0, min(20, filter_speckle)),
@@ -88,15 +102,23 @@ async def analyze(
             "min_boundary_length_mm": max(0.5, min_boundary_length_mm),
             "simplify_tolerance_mm": max(0.05, min(1.0, simplify_tolerance_mm)),
             "wire_diameter_mm": max(0.2, min(2.0, wire_diameter_mm)),
-            "min_wire_spacing_mm": max(0.2, min_wire_spacing_mm),
+            "recommended_spacing_mm": max(0.2, effective_spacing),
+            "min_wire_spacing_mm": max(0.2, effective_spacing),
             "min_radius_mm": max(0.1, min_radius_mm),
             "smoothness": max(0.0, min(1.0, smoothness)),
             "gen_outline": bool(gen_outline),
+            # V2.2 线稿参数
+            "binary_threshold": int(binary_threshold) if binary_threshold and binary_threshold != "auto" else None,
+            "denoise_ksize": max(0, min(9, denoise_ksize)),
+            "min_spur_length_mm": max(0.2, min_spur_length_mm),
+            "keep_fine_segments": bool(keep_fine_segments),
+            "skeleton_method": skeleton_method,
+            "graph_engine": graph_engine if graph_engine in ("skan", "legacy") else "skan",
         }
         current_config = config
 
         # 根据生成模式处理
-        if generate_mode == "svg":
+        if effective_mode == "svg":
             # 普通SVG模式：直接返回VTracer原始SVG
             from backend.segmentation.vtracer_adapter import VTracerAdapter
             adapter = VTracerAdapter(
@@ -118,7 +140,7 @@ async def analyze(
                 },
             })
 
-        if generate_mode == "outline":
+        if effective_mode == "outline":
             # 仅轮廓模式：VTracer用none模式只输出轮廓线
             from backend.segmentation.vtracer_adapter import VTracerAdapter
             adapter = VTracerAdapter(
@@ -139,6 +161,74 @@ async def analyze(
                     "output_width_mm": output_width_mm,
                 },
             })
+
+        # V2.2 线稿模式 / 自动检测
+        if effective_mode in ("lineart", "auto"):
+            from backend.lineart.pipeline import LineArtPipeline
+            from backend.lineart.detector import LineArtDetector
+            auto_detection = None
+            if effective_mode == "auto":
+                # 先解码图像用于检测
+                import numpy as np
+                import cv2
+                nparr = np.frombuffer(image_bytes, np.uint8)
+                img_bgr_auto = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                detector = LineArtDetector()
+                det_result = detector.detect(img_bgr_auto)
+                is_lineart = (det_result.get("mode") == "lineart")
+                auto_detection = det_result
+                if not is_lineart:
+                    # 自动检测为彩色图，走掐丝模式
+                    pipeline = CloisonnePipeline(config)
+                    current_pipeline = pipeline
+                    result = pipeline.run(image_bytes, output_width_mm=output_width_mm, img_format=_detect_format(file.filename))
+                    current_result = result
+                    summary = {
+                        "engine": result["engine"],
+                        "mode": "cloisonne",
+                        "auto_detection": auto_detection,
+                        "image_info": result["image_info"],
+                        "color_palette": result["color_palette"],
+                        "regions": result["regions"],
+                        "boundaries": result["boundaries"],
+                        "curves_summary": {
+                            bid: {"segment_count": v["segment_count"]}
+                            for bid, v in result["curves"].items()
+                        },
+                        "merged_curves": result["merged_curves"],
+                        "validation": result["validation"],
+                        "preview_images": result["preview_images"],
+                        "has_dxf": result.get("dxf_base64") is not None,
+                        "has_ibl": result.get("ibl_text") is not None,
+                    }
+                    return JSONResponse(content=summary)
+
+            # 线稿模式
+            la_pipeline = LineArtPipeline(config)
+            current_pipeline = la_pipeline
+            result = la_pipeline.run(image_bytes, output_width_mm=output_width_mm, img_format=_detect_format(file.filename))
+            current_result = result
+            summary = {
+                "engine": result.get("engine", "lineart_skeleton"),
+                "mode": "lineart",
+                "auto_detection": auto_detection,
+                "image_info": result["image_info"],
+                "lineart_stats": result.get("lineart_stats", {}),
+                "strokes": result.get("strokes", []),
+                "branches": result.get("branches", []),
+                "centerlines": {
+                    cid: {"segment_count": len(v.get("segments", [])), "length_mm": v.get("length_mm", 0)}
+                    for cid, v in result.get("centerlines", {}).items()
+                },
+                "junctions": result.get("junctions", []),
+                "endpoints": result.get("endpoints", []),
+                "merged_curves": result.get("merged_curves", []),
+                "validation": result["validation"],
+                "preview_images": result.get("preview_images", {}),
+                "dxf_base64": result.get("dxf_base64"),
+                "ibl_text": result.get("ibl_text"),
+            }
+            return JSONResponse(content=summary)
 
         # 掐丝珐琅模式（默认）：完整管线
         pipeline = CloisonnePipeline(config)

@@ -1,4 +1,4 @@
-// 掐丝珐琅图片转Creo曲线生成器 V2.0 前端逻辑
+// 掐丝珐琅图片转Creo曲线生成器 V2.2 前端逻辑
 const API_BASE = '';
 
 let currentFile = null;
@@ -25,20 +25,60 @@ const previewPlaceholder = document.getElementById('preview-placeholder');
 const previewStack = document.getElementById('preview-stack');
 const previewInfo = document.getElementById('preview-info');
 const colorInteract = document.getElementById('color-interact');
+const colorParams = document.getElementById('color-params');
+const lineartParams = document.getElementById('lineart-params');
+const colorResultGrid = document.getElementById('color-result-grid');
+const lineartResultGrid = document.getElementById('lineart-result-grid');
+const autoDetectResult = document.getElementById('auto-detect-result');
 
 // 图层开关
 const layerToggles = {
   original: document.getElementById('layer-original'),
   regions: document.getElementById('layer-regions'),
   boundaries: document.getElementById('layer-boundaries'),
+  binary: document.getElementById('layer-binary'),
+  skeleton: document.getElementById('layer-skeleton'),
+  pruned: document.getElementById('layer-pruned'),
   svg: document.getElementById('layer-svg'),
 };
 const layerImages = {
   original: document.getElementById('img-original'),
   regions: document.getElementById('img-regions'),
   boundaries: document.getElementById('img-boundaries'),
+  binary: document.getElementById('img-binary'),
+  skeleton: document.getElementById('img-skeleton'),
+  pruned: document.getElementById('img-pruned'),
 };
 const svgContainer = document.getElementById('svg-container');
+
+// 生成模式切换
+function getCurrentMode() {
+  const selected = document.querySelector('input[name="generate-mode"]:checked');
+  return selected ? selected.value : 'auto';
+}
+
+function updateModeUI() {
+  const mode = getCurrentMode();
+  const isColor = (mode === 'cloisonne');
+  const isLineart = (mode === 'lineart');
+  const isAuto = (mode === 'auto');
+
+  // 参数面板
+  colorParams.style.display = (isColor || isAuto) ? 'block' : 'none';
+  lineartParams.style.display = (isLineart || isAuto) ? 'block' : 'none';
+
+  // Debug 图层
+  document.querySelectorAll('.layer-color').forEach(el => el.style.display = (isColor || isAuto) ? '' : 'none');
+  document.querySelectorAll('.layer-lineart').forEach(el => el.style.display = (isLineart || isAuto) ? '' : 'none');
+
+  // 自动检测结果
+  autoDetectResult.style.display = 'none';
+  autoDetectResult.textContent = '';
+}
+
+document.querySelectorAll('input[name="generate-mode"]').forEach(radio => {
+  radio.addEventListener('change', updateModeUI);
+});
 
 // 参数预设
 const PRESETS = {
@@ -144,13 +184,21 @@ btnAnalyze.addEventListener('click', async () => {
   formData.append('min_boundary_length_mm', document.getElementById('min-boundary').value);
   formData.append('simplify_tolerance_mm', document.getElementById('simplify-tol').value);
   formData.append('wire_diameter_mm', document.getElementById('wire-diameter').value);
-  formData.append('min_wire_spacing_mm', document.getElementById('min-spacing').value);
+  formData.append('recommended_spacing_mm', document.getElementById('min-spacing').value);
   formData.append('min_radius_mm', document.getElementById('min-radius').value);
   formData.append('output_width_mm', document.getElementById('output-width').value);
   formData.append('smoothness', document.getElementById('smoothness').value / 100);
   formData.append('gen_outline', document.getElementById('gen-outline').checked);
+  // 线稿参数
+  const bt = document.getElementById('la-binary-threshold').value;
+  formData.append('binary_threshold', bt === 'auto' ? '' : bt);
+  formData.append('denoise_ksize', document.getElementById('la-denoise').value);
+  formData.append('min_spur_length_mm', document.getElementById('la-spur').value);
+  formData.append('keep_fine_segments', document.getElementById('la-keep-fine').checked);
+  formData.append('skeleton_method', document.getElementById('la-skeleton').value);
+  formData.append('graph_engine', document.getElementById('la-graph-engine').value);
   const selectedMode = document.querySelector('input[name="generate-mode"]:checked');
-  formData.append('generate_mode', selectedMode ? selectedMode.value : 'cloisonne');
+  formData.append('gen_mode', selectedMode ? selectedMode.value : 'auto');
 
   try {
     const response = await fetch(`${API_BASE}/api/analyze`, {
@@ -207,8 +255,84 @@ function renderResult(result) {
     return;
   }
 
+  // 线稿模式 (V2.2)
+  if (result.mode === 'lineart' || result.engine === 'lineart_skeleton') {
+    resultSummary.style.display = 'block';
+    colorResultGrid.style.display = 'none';
+    lineartResultGrid.style.display = 'grid';
+    colorInteract.style.display = 'none';
+
+    const ls = result.lineart_stats || {};
+    const v = result.validation;
+    document.getElementById('res-la-strokes').textContent = ls.raw_branch_count || result.strokes ? result.strokes.length : '-';
+    document.getElementById('res-la-branches').textContent = ls.branch_count || '-';
+    document.getElementById('res-la-junctions').textContent = ls.junction_count || '-';
+    document.getElementById('res-la-endpoints').textContent = ls.endpoint_count || '-';
+    document.getElementById('res-la-curves').textContent = ls.final_curve_count || '-';
+    document.getElementById('res-la-merged').textContent = ls.merged_curve_count || (result.merged_curves ? result.merged_curves.length : '-');
+    document.getElementById('res-la-hard').textContent = v.hard_collision_count || 0;
+    document.getElementById('res-la-dense').textContent = v.dense_spacing_warning_count || 0;
+    document.getElementById('res-la-intersect').textContent = v.self_intersection_count || v.intersection_count || 0;
+    document.getElementById('res-la-smallradius').textContent = v.small_radius_count || 0;
+
+    const valStatus = document.getElementById('res-validation');
+    let valText = `验证状态: ${v.status === 'ok' ? '通过 ✓' : v.status === 'error' ? '错误 ✗' : '警告 ⚠'}`;
+    if (v.hard_collision_count > 0) valText += ` | 实体碰撞: ${v.hard_collision_count}`;
+    if (v.dense_spacing_warning_count > 0) valText += ` | 过密区域: ${v.dense_spacing_warning_count}`;
+    valStatus.textContent = valText;
+    valStatus.className = `val-status ${v.status}`;
+
+    // 自动检测结果
+    if (result.auto_detection) {
+      autoDetectResult.style.display = 'block';
+      const ad = result.auto_detection;
+      autoDetectResult.textContent = `自动检测: ${ad.mode === 'lineart' ? '黑白线稿' : '彩色图'} ${ad.stats ? '' : ''}`;
+    }
+
+    // 预览图
+    previewPlaceholder.style.display = 'none';
+    previewStack.style.display = 'block';
+    if (currentFile) {
+      layerImages.original.src = URL.createObjectURL(currentFile);
+      layerImages.original.style.display = layerToggles.original.checked ? 'block' : 'none';
+    }
+    // 线稿调试图层
+    if (result.preview_images) {
+      const laLayers = ['binary', 'skeleton', 'pruned_skeleton', 'final_curves'];
+      const laKeys = {binary: 'binary', skeleton: 'skeleton', pruned: 'pruned_skeleton'};
+      for (const [key, imgKey] of Object.entries(laKeys)) {
+        if (result.preview_images[imgKey]) {
+          layerImages[key].src = `data:image/png;base64,${result.preview_images[imgKey]}`;
+          layerImages[key].style.display = layerToggles[key].checked ? 'block' : 'none';
+        } else {
+          layerImages[key].style.display = 'none';
+        }
+      }
+    }
+    // 隐藏彩色图层
+    layerImages.regions.style.display = 'none';
+    layerImages.boundaries.style.display = 'none';
+
+    loadSvg();
+
+    previewInfo.textContent =
+      `引擎: ${result.engine} (${v.graph_engine || 'skan'}) | ` +
+      `Stroke: ${ls.raw_branch_count || '-'} | Curve: ${ls.final_curve_count || '-'} | ` +
+      `合并: ${ls.merged_curve_count || '-'} | 碰撞: ${v.hard_collision_count || 0} | ` +
+      `过密: ${v.dense_spacing_warning_count || 0} | 输出: ${result.image_info.output_width_mm}×${result.image_info.output_height_mm}mm`;
+
+    btnExportSvg.disabled = false;
+    btnDownloadSvg.disabled = false;
+    btnDownloadDxf.disabled = !result.dxf_base64;
+    btnDownloadIbl.disabled = !result.ibl_text;
+    btnDownloadJson.disabled = false;
+    return;
+  }
+
   // 掐丝模式：曲线检查面板
   resultSummary.style.display = 'block';
+  colorResultGrid.style.display = 'grid';
+  lineartResultGrid.style.display = 'none';
   document.getElementById('res-regions').textContent = result.regions.length;
   document.getElementById('res-boundaries').textContent = result.boundaries.length;
   document.getElementById('res-merged').textContent =
@@ -409,3 +533,4 @@ function setStatus(text, type) {
 
 // 初始化
 setStatus('请上传图片', 'ready');
+updateModeUI();

@@ -22,8 +22,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.lineart.detector import LineArtDetector
 from backend.lineart.preprocess import LineArtPreprocess
 from backend.lineart.skeleton import LineArtSkeleton
-from backend.lineart.graph import SkeletonGraph
+from backend.lineart.graph import SkeletonGraph as LegacySkeletonGraph
+from backend.lineart.graph_skan import SkanSkeletonGraph
 from backend.lineart.pruning import SpurPruner
+from backend.lineart.validator import LineArtValidator
 from backend.curve.simplifier import CurveSimplifier
 from backend.curve.bezier_fitter import BezierFitter
 from backend.curve.curve_merger import CurveMerger
@@ -72,8 +74,9 @@ class LineArtPipeline:
         执行线稿管线, 返回与 CloisonnePipeline 兼容的 result dict。
         """
         self.output_width_mm = float(output_width_mm)
+        # V2.2 线稿工程参数
         wire_diameter_mm = self.config.get("wire_diameter_mm", 0.6)
-        min_spacing_mm = self.config.get("min_wire_spacing_mm", 0.8)
+        recommended_spacing_mm = self.config.get("recommended_spacing_mm", 0.8)
         min_radius_mm = self.config.get("min_radius_mm", 1.0)
         simplify_tolerance_mm = self.config.get("simplify_tolerance_mm", 0.15)
         smoothness = self.config.get("smoothness", 0.7)
@@ -102,9 +105,24 @@ class LineArtPipeline:
         skeleton = skeletor.skeletonize(mask)
         self._save_debug("skeleton.png", skeleton)
 
-        # ========== Phase 3: Skeleton Graph ==========
-        graph = SkeletonGraph()
-        graph.extract(skeleton)
+        # ========== Phase 3: Skeleton Graph (V2.2: Skan 默认, Legacy fallback) ==========
+        graph_engine = self.config.get("graph_engine", "skan")
+        graph_stats = {}
+        if graph_engine == "skan":
+            try:
+                graph = SkanSkeletonGraph()
+                graph.extract(skeleton, spacing_mm_per_px=scale)
+                graph_stats = dict(graph.stats)
+                self._graph_engine_used = "skan"
+            except Exception as e:
+                print(f"[warn] Skan graph failed ({e}), fallback to legacy")
+                graph = LegacySkeletonGraph()
+                graph.extract(skeleton)
+                self._graph_engine_used = "legacy"
+        else:
+            graph = LegacySkeletonGraph()
+            graph.extract(skeleton)
+            self._graph_engine_used = "legacy"
 
         # ========== Phase 4: Spur Pruning ==========
         pruner = SpurPruner(
@@ -117,8 +135,9 @@ class LineArtPipeline:
         pruned_skel = np.zeros_like(skeleton, dtype=bool)
         for edge in graph.edges:
             for (y, x) in edge["points"]:
-                if 0 <= y < img_h and 0 <= x < img_w:
-                    pruned_skel[y, x] = True
+                yi, xi = int(round(y)), int(round(x))
+                if 0 <= yi < img_h and 0 <= xi < img_w:
+                    pruned_skel[yi, xi] = True
         self._save_debug("pruned_skeleton.png", pruned_skel)
 
         # ========== Phase 5: 坐标转换 + 简化 + Bezier 拟合 ==========
@@ -165,16 +184,24 @@ class LineArtPipeline:
         merger = CurveMerger(g0_tolerance_mm=0.01, g1_angle_deg=3.0)
         self.merged_curves = merger.merge(curve_list)
 
-        # ========== Phase 7: 工程验证 ==========
-        validator = CurveValidator(min_spacing_mm=min_spacing_mm, min_radius_mm=min_radius_mm)
+        # ========== Phase 7: 工程验证 (V2.2: LineArtValidator 新语义) ==========
+        validator = LineArtValidator(
+            wire_diameter_mm=wire_diameter_mm,
+            recommended_spacing_mm=recommended_spacing_mm,
+            min_radius_mm=min_radius_mm,
+        )
         validation = validator.validate(self.merged_curves if self.merged_curves else curve_list)
-        validation["wire_diameter_mm"] = wire_diameter_mm
         validation["engine"] = "lineart_skeleton"
+        validation["graph_engine"] = getattr(self, "_graph_engine_used", "skan")
         validation["curve_group_count"] = len(self.merged_curves) if self.merged_curves else 0
-        validation["broken_curve_count"] = 0
         validation["skeleton_edge_count"] = len(graph.edges)
         validation["skeleton_node_count"] = len(graph.nodes)
         validation["pruned_spur_count"] = len(pruner.removed_edges)
+        # V2.2 统计
+        validation.update(graph_stats)
+        validation["raw_branch_count"] = len(graph.edges)
+        validation["final_curve_count"] = len(curve_list)
+        validation["merged_curve_count"] = len(self.merged_curves) if self.merged_curves else 0
 
         # ========== Phase 8: 导出 ==========
         # SVG
@@ -225,6 +252,26 @@ class LineArtPipeline:
                 "length_mm": round(sum(self._seg_len(s) for s in mc["segments"]), 3),
             })
 
+        # V2.2: LineArt 内部对象命名 (Stroke/Branch/Centerline), 兼容旧 boundaries
+        strokes = [
+            {"id": b["id"], "length_mm": b["length_mm"], "closed": b["closed"],
+             "point_count": len(b["points"])}
+            for b in simplified_boundaries
+        ]
+        branches = [
+            {"id": e["id"], "node_a": e.get("node_a"), "node_b": e.get("node_b"),
+             "length_px": round(e["length_px"], 2), "closed": e.get("closed", False)}
+            for e in graph.edges
+        ]
+        junctions = [
+            {"id": nid, "y": round(n["y"], 2), "x": round(n["x"], 2), "degree": n["degree"]}
+            for nid, n in graph.nodes.items() if n["type"] == "junction"
+        ]
+        endpoints = [
+            {"id": nid, "y": round(n["y"], 2), "x": round(n["x"], 2)}
+            for nid, n in graph.nodes.items() if n["type"] == "endpoint"
+        ]
+
         result = {
             "image_info": {
                 "width_px": int(img_w),
@@ -235,13 +282,20 @@ class LineArtPipeline:
             },
             "engine": "lineart_skeleton",
             "mode": "lineart",
+            "graph_engine": getattr(self, "_graph_engine_used", "skan"),
             "color_palette": [],
             "regions": [],
-            "boundaries": [
-                {"id": b["id"], "length_mm": b["length_mm"], "closed": b["closed"],
-                 "region_a": -1, "region_b": -1, "point_count": len(b["points"])}
-                for b in simplified_boundaries
-            ],
+            # V2.2 新命名
+            "strokes": strokes,
+            "branches": branches,
+            "centerlines": {
+                c["id"]: {"segment_count": len(c["segments"]), "segments": c["segments"]}
+                for c in curve_list
+            },
+            "junctions": junctions,
+            "endpoints": endpoints,
+            # 兼容旧版本 (暂时保留)
+            "boundaries": strokes,
             "curves": {
                 c["id"]: {"segment_count": len(c["segments"]), "segments": c["segments"]}
                 for c in curve_list
@@ -259,13 +313,20 @@ class LineArtPipeline:
                 "min_spur_length_mm": min_spur_length_mm,
                 "keep_fine_segments": keep_fine_segments,
                 "skeleton_method": self.config.get("skeleton_method", "skeletonize"),
+                "graph_engine": getattr(self, "_graph_engine_used", "skan"),
+                "wire_diameter_mm": wire_diameter_mm,
+                "recommended_spacing_mm": recommended_spacing_mm,
             },
             "lineart_stats": {
-                "skeleton_edges": len(graph.edges),
-                "skeleton_nodes": len(graph.nodes),
-                "pruned_spurs": len(pruner.removed_edges),
-                "curve_count": len(curve_list),
+                "skeleton_pixel_count": graph_stats.get("skeleton_pixel_count", int(skeleton.sum())),
+                "junction_count": graph_stats.get("junction_count", len(junctions)),
+                "endpoint_count": graph_stats.get("endpoint_count", len(endpoints)),
+                "branch_count": graph_stats.get("branch_count", len(graph.edges)),
+                "cycle_count": graph_stats.get("cycle_count", 0),
+                "raw_branch_count": len(graph.edges),
+                "final_curve_count": len(curve_list),
                 "merged_curve_count": len(self.merged_curves) if self.merged_curves else 0,
+                "pruned_spurs": len(pruner.removed_edges),
             },
         }
         result = self._to_native(result)
