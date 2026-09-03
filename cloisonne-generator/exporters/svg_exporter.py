@@ -59,18 +59,25 @@ class SVGExporter:
                 svg_parts.append(f'    <polyline class="boundary-raw" points="{pts}"/>')
         svg_parts.append('  </g>')
 
-        # Layer 3: 最终掐丝曲线（贝塞尔，金色）
-        svg_parts.append('  <g id="final-wire-curves">')
+        # Layer 3: 最终掐丝曲线（贝塞尔，金色） — 独立分组，与 debug 标签分开
+        svg_parts.append('  <g id="cloisonne-wire">')
         for b in boundaries:
             bid = b["id"]
             if bid in curves and curves[bid]:
                 d = self._bezier_segments_to_path(curves[bid])
                 if d:
                     svg_parts.append(f'    <path class="final-wire" d="{d}" id="{bid}"/>')
-                    # 标注边界ID（中点位置）
-                    mid_idx = len(b["points"]) // 2
-                    mx, my = b["points"][mid_idx]
-                    svg_parts.append(f'    <text class="boundary-id" x="{mx}" y="{my}">{bid}</text>')
+        svg_parts.append('  </g>')
+
+        # Layer 4: Debug 标签（边界ID文本）— 默认隐藏，由前端"曲线编号"开关控制
+        svg_parts.append('  <g id="debug-labels" style="display:none;">')
+        for b in boundaries:
+            bid = b["id"]
+            if bid in curves and curves[bid] and len(b["points"]) >= 2:
+                # 标注边界ID（中点位置）
+                mid_idx = len(b["points"]) // 2
+                mx, my = b["points"][mid_idx]
+                svg_parts.append(f'    <text class="boundary-id" x="{mx}" y="{my}">{bid}</text>')
         svg_parts.append('  </g>')
 
         svg_parts.append('</svg>')

@@ -41,6 +41,7 @@ const layerToggles = {
   skeleton: document.getElementById('layer-skeleton'),
   pruned: document.getElementById('layer-pruned'),
   svg: document.getElementById('layer-svg'),
+  labels: document.getElementById('layer-labels'),
 };
 const layerImages = {
   original: document.getElementById('img-original'),
@@ -359,16 +360,7 @@ function renderSvgLikeResult(result, label) {
     layerImages.original.src = URL.createObjectURL(currentFile);
     layerImages.original.style.display = 'block';
   }
-  svgContainer.style.display = 'block';
-  svgContainer.innerHTML = result.svg;
-  const svg = svgContainer.querySelector('svg');
-  if (svg) {
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.width = '100%';
-    svg.style.height = '100%';
-  }
+  loadSvg(result.svg);
   previewInfo.textContent = `模式: ${label} | 尺寸: ${result.image_info.width_px}×${result.image_info.height_px}px`;
   btnExportSvg.disabled = false;
   btnDownloadSvg.disabled = false;
@@ -458,7 +450,7 @@ function renderLineartResult(result) {
     }
   }
 
-  loadSvg();
+  loadSvg(result.svg);
 
   const widthMm = imageInfo.output_width_mm ?? '-';
   const heightMm = imageInfo.output_height_mm ?? '-';
@@ -522,7 +514,7 @@ function renderColorResult(result) {
     }
   }
 
-  loadSvg();
+  loadSvg(result.svg);
 
   previewInfo.textContent =
     `引擎: ${result.engine} | 区域: ${result.regions.length} | 边界: ${result.boundaries.length} | ` +
@@ -607,27 +599,35 @@ function renderColorInteraction(result) {
   neighborsEl.innerHTML = '<div>点击上方颜色查看相邻区域与共享边界</div>';
 }
 
-// 加载SVG预览
-async function loadSvg() {
-  try {
-    const resp = await fetch(`${API_BASE}/api/svg`);
-    if (resp.ok) {
-      const svgText = await resp.text();
-      // V2.2.2: 强制替换旧DOM，避免旧SVG残留叠加
-      svgContainer.replaceChildren();
-      svgContainer.innerHTML = svgText;
-      const svg = svgContainer.querySelector('svg');
-      if (svg) {
-        svg.style.position = 'absolute';
-        svg.style.top = '0';
-        svg.style.left = '0';
-        svg.style.width = '100%';
-        svg.style.height = '100%';
-      }
-      svgContainer.style.display = layerToggles.svg.checked ? 'block' : 'none';
-    }
-  } catch (e) {
-    console.warn('SVG加载失败', e);
+// 加载SVG预览 (V2.2.2: 纯函数，不再自己请求服务器)
+function loadSvg(svgText = '') {
+  // 强制清理旧DOM，避免旧SVG叠加
+  svgContainer.replaceChildren();
+  if (!svgText) {
+    svgContainer.style.display = 'none';
+    return;
+  }
+  svgContainer.innerHTML = svgText;
+  const svg = svgContainer.querySelector('svg');
+  if (svg) {
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.position = 'relative';
+    svg.style.display = 'block';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    svg.style.maxWidth = '100%';
+  }
+  svgContainer.style.display = layerToggles.svg.checked ? 'block' : 'none';
+  updateLabelVisibility();
+}
+
+// 曲线编号(Debug标签)开关: 默认关闭，控制 SVG 内 #debug-labels 组
+function updateLabelVisibility() {
+  const showLabels = !!(layerToggles.labels && layerToggles.labels.checked);
+  const labelsG = svgContainer ? svgContainer.querySelector('#debug-labels') : null;
+  if (labelsG) {
+    labelsG.style.display = showLabels ? '' : 'none';
   }
 }
 
@@ -667,6 +667,8 @@ Object.keys(layerToggles).forEach(key => {
   layerToggles[key].addEventListener('change', (e) => {
     if (key === 'svg') {
       svgContainer.style.display = e.target.checked ? 'block' : 'none';
+    } else if (key === 'labels') {
+      updateLabelVisibility();
     } else {
       layerImages[key].style.display = e.target.checked ? 'block' : 'none';
     }

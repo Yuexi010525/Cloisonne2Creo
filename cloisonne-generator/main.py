@@ -129,7 +129,7 @@ async def analyze(
             )
             svg_raw = adapter.convert(image_bytes, _detect_format(file.filename))
             current_pipeline = adapter
-            return JSONResponse(content={
+            current_result = {
                 "engine": "vtracer-svg",
                 "mode": "svg",
                 "svg": svg_raw,
@@ -138,7 +138,8 @@ async def analyze(
                     "height_px": adapter.height,
                     "output_width_mm": output_width_mm,
                 },
-            })
+            }
+            return JSONResponse(content=current_result)
 
         if effective_mode == "outline":
             # 仅轮廓模式：VTracer用none模式只输出轮廓线
@@ -151,7 +152,7 @@ async def analyze(
             )
             svg_raw = adapter.convert(image_bytes, _detect_format(file.filename))
             current_pipeline = adapter
-            return JSONResponse(content={
+            current_result = {
                 "engine": "vtracer-outline",
                 "mode": "outline",
                 "svg": svg_raw,
@@ -160,7 +161,8 @@ async def analyze(
                     "height_px": adapter.height,
                     "output_width_mm": output_width_mm,
                 },
-            })
+            }
+            return JSONResponse(content=current_result)
 
         # V2.2 线稿模式 / 自动检测
         if effective_mode in ("lineart", "auto"):
@@ -198,6 +200,7 @@ async def analyze(
                         "merged_curves": result["merged_curves"],
                         "validation": result["validation"],
                         "preview_images": result["preview_images"],
+                        "svg": result.get("svg"),
                         "has_dxf": result.get("dxf_base64") is not None,
                         "has_ibl": result.get("ibl_text") is not None,
                     }
@@ -225,6 +228,7 @@ async def analyze(
                 "merged_curves": result.get("merged_curves", []),
                 "validation": result["validation"],
                 "preview_images": result.get("preview_images", {}),
+                "svg": result.get("svg"),
                 "dxf_base64": result.get("dxf_base64"),
                 "ibl_text": result.get("ibl_text"),
             }
@@ -251,6 +255,7 @@ async def analyze(
             "merged_curves": result["merged_curves"],
             "validation": result["validation"],
             "preview_images": result["preview_images"],
+            "svg": result.get("svg"),
             "has_dxf": result.get("dxf_base64") is not None,
             "has_ibl": result.get("ibl_text") is not None,
         }
@@ -275,32 +280,22 @@ def _detect_format(filename):
 @app.get("/api/svg")
 async def get_svg():
     """获取当前分析结果的SVG"""
-    if current_pipeline is None:
+    if current_result is None:
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
-    if isinstance(current_pipeline, CloisonnePipeline):
-        svg = current_pipeline.get_svg()
-    elif hasattr(current_pipeline, "svg_content") and current_pipeline.svg_content:
-        svg = current_pipeline.svg_content
-    elif hasattr(current_pipeline, "svg"):
-        svg = current_pipeline.svg
-    else:
-        raise HTTPException(status_code=404, detail="当前模式无SVG")
+    svg = current_result.get("svg")
+    if not svg:
+        raise HTTPException(status_code=404, detail="当前结果无SVG")
     return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.get("/api/download/svg")
 async def download_svg():
     """下载SVG文件"""
-    if current_pipeline is None:
+    if current_result is None:
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
-    if isinstance(current_pipeline, CloisonnePipeline):
-        svg = current_pipeline.get_svg()
-    elif hasattr(current_pipeline, "svg_content") and current_pipeline.svg_content:
-        svg = current_pipeline.svg_content
-    elif hasattr(current_pipeline, "svg"):
-        svg = current_pipeline.svg
-    else:
-        raise HTTPException(status_code=404, detail="当前模式无SVG")
+    svg = current_result.get("svg")
+    if not svg:
+        raise HTTPException(status_code=404, detail="当前结果没有SVG")
     return Response(
         content=svg,
         media_type="image/svg+xml",
@@ -335,13 +330,18 @@ async def download_dxf():
     if current_result is None:
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
     try:
-        from backend.pipeline import CloisonnePipeline
-        dxf_bytes = current_pipeline.get_dxf_bytes()
+        import base64
+        dxf_b64 = current_result.get("dxf_base64")
+        if not dxf_b64:
+            raise HTTPException(status_code=404, detail="当前结果没有DXF数据")
+        dxf_bytes = base64.b64decode(dxf_b64)
         return Response(
             content=dxf_bytes,
             media_type="application/dxf",
             headers={"Content-Disposition": "attachment; filename=cloisonne_curves.dxf"}
         )
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -354,12 +354,16 @@ async def download_ibl():
     if current_result is None:
         raise HTTPException(status_code=404, detail="请先上传图片并分析")
     try:
-        ibl_bytes = current_pipeline.get_ibl_bytes()
+        ibl_text = current_result.get("ibl_text")
+        if not ibl_text:
+            raise HTTPException(status_code=404, detail="当前结果没有IBL数据")
         return Response(
-            content=ibl_bytes,
-            media_type="text/plain",
+            content=ibl_text.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": "attachment; filename=cloisonne_curves.ibl"}
         )
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
