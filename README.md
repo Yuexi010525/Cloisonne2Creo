@@ -2,7 +2,7 @@
 
 把图片转换为可直接进 Creo 的掐丝珐琅中心线（SVG / DXF / IBL / JSON）的工具。
 
-> 本仓库由开发者 + AI 协作开发。开发过程中使用了 OpenAI ChatGPT 输出的技术规格书（见 `docs/`），当前实现严格遵循 V2.1 规格书：**不重复造轮子，几何正确优先**——复用开源 VTracer 做矢量化引擎、Shapely 做矢量几何，仅自研 Shared Boundary（共享边界提取）+ 工程约束 + Creo 导出。
+> 本仓库由开发者 + AI 协作开发。开发过程中使用了 OpenAI ChatGPT 输出的技术规格书（见 `docs/`），当前实现严格遵循 V2.1 规格书：**不重复造轮子，几何正确优先，输入语义分叉**——彩色填充图复用开源 VTracer 做矢量化引擎、Shapely 做矢量几何（Region→SharedBoundary）；黑白线稿复用 scikit-image 做骨架化（Stroke→Skeleton 中心线），彻底解决粗线变双线问题。自动检测输入类型，不确定时优先彩色模式。
 
 ## 快速开始
 
@@ -14,7 +14,7 @@ C:\Users\<你的用户名>\AppData\Local\Programs\Python\Python312\python.exe ma
 # 浏览器打开 http://127.0.0.1:8765
 ```
 
-依赖：见 `cloisonne-generator/requirements.txt`（fastapi, uvicorn, opencv-python, numpy, svgpathtools, ezdxf, vtracer, shapely, Pillow, python-multipart）
+依赖：见 `cloisonne-generator/requirements.txt`（fastapi, uvicorn, opencv-python, numpy, svgpathtools, ezdxf, vtracer, shapely, scikit-image, Pillow, python-multipart）
 
 ## 目录结构
 
@@ -22,7 +22,13 @@ C:\Users\<你的用户名>\AppData\Local\Programs\Python\Python312\python.exe ma
 docs/                     ChatGPT 导出的技术规格书（V1.0 + V2.0 + V2.1）
 测试图片/                 用户原始掐丝线稿素材（源流之子系列）
 cloisonne-generator/
-  backend/                V2.1 管线（VTracer适配 / Shapely共享边界 / 工程验证）
+  backend/                V2.1 管线
+    lineart/              V2.1 新增：线稿模式（detector/preprocess/skeleton/graph/pruning/pipeline）
+    boundary/             Shapely共享边界提取
+    curve/                简化/Bezier拟合/合并/断线修复
+    segmentation/         VTracer适配/区域分割
+    validation/           工程验证（自交/线距/小半径）
+    legacy/               已废弃模块（quantizer/processor）
   frontend/               Web 界面（参数预设 / 曲线检查面板 / 颜色交互）
   exporters/              SVG / DXF / IBL / JSON 导出器
   tests/                  验收测试 + 多轮结果生成脚本

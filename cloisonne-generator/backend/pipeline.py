@@ -23,6 +23,8 @@ from backend.curve.bezier_fitter import BezierFitter
 from backend.curve.curve_merger import CurveMerger
 from backend.curve.broken_repair import BrokenCurveRepair
 from backend.validation.curve_validator import CurveValidator
+from backend.lineart.detector import LineArtDetector
+from backend.lineart.pipeline import LineArtPipeline
 from exporters.svg_exporter import SVGExporter
 from exporters.dxf_exporter import DXFExporter
 from exporters.ibl_exporter import IBLExporter
@@ -66,6 +68,38 @@ class CloisonnePipeline:
         gen_outline = self.config.get("gen_outline", False)
 
         self.output_width_mm = float(output_width_mm)
+
+        # ========== V2.1 生成模式分发 (auto/lineart/color) ==========
+        # 规格书: if mode == "auto": mode = detect_input_mode(image)
+        #   lineart → LineArtPipeline (Stroke→Skeleton)
+        #   color   → 原 CloisonnePipeline (Region→SharedBoundary)
+        #   uncertain → 优先彩色模式(不错误进入Line Art)
+        gen_mode = self.config.get("gen_mode", None)
+        vt_mode = mode  # VTracer 的 spline/polygon
+        if gen_mode is None:
+            if vt_mode in ("auto", "lineart", "color", "cloisonne", "svg"):
+                gen_mode = vt_mode
+                vt_mode = "spline"
+            else:
+                gen_mode = "auto"
+        mode = vt_mode  # 恢复 VTracer mode
+
+        if gen_mode == "lineart":
+            return self._run_lineart(image_bytes, output_width_mm, img_format)
+
+        if gen_mode == "auto":
+            try:
+                nparr = np.frombuffer(image_bytes, np.uint8)
+                img_det = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img_det is not None:
+                    det = LineArtDetector(self.config).detect(img_det)
+                    if det["mode"] == "lineart":
+                        result = self._run_lineart(image_bytes, output_width_mm, img_format)
+                        result["auto_detection"] = det
+                        return result
+                    # color / uncertain → 继续原彩色逻辑
+            except Exception as e:
+                print(f"[warn] auto detect failed, fallback to color: {e}")
 
         # ========== Phase 1: VTracer 图片矢量化（复用开源） ==========
         self.vtracer = VTracerAdapter(
@@ -269,6 +303,16 @@ class CloisonnePipeline:
         }
         self.result = self._to_native(self.result)
         return self.result
+
+    def _run_lineart(self, image_bytes, output_width_mm, img_format):
+        """V2.1 线稿模式: 委托给 LineArtPipeline (Stroke→Skeleton)"""
+        line_pipe = LineArtPipeline(self.config)
+        result = line_pipe.run(image_bytes, output_width_mm, img_format)
+        self.svg_content = line_pipe.svg_content
+        self.merged_curves = line_pipe.merged_curves
+        self.output_width_mm = line_pipe.output_width_mm
+        self.output_height_mm = line_pipe.output_height_mm
+        return result
 
     def _seg_len(self, seg):
         p0 = np.array(seg["p0"])

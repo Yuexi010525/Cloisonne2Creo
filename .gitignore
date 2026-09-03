@@ -30,8 +30,14 @@ _ls.json
 /开源掐丝模型生成器推荐-2_files/
 /开源掐丝模型生成器推荐-3.html
 /开源掐丝模型生成器推荐-3_files/
+/开源掐丝模型生成器推荐-4.html
+/开源掐丝模型生成器推荐-4_files/
 spec3_all.txt
 spec3_conversation.txt
+spec4_all.txt
+
+# 线稿模式调试输出
+cloisonne-generator/tests/lineart_v21_debug/
 
 # 临时调试脚本（保留本地，不入库）
 cloisonne-generator/tests/debug_*.py
