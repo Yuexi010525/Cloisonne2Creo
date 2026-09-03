@@ -37,3 +37,4 @@ spec3_conversation.txt
 cloisonne-generator/tests/debug_*.py
 cloisonne-generator/tests/debug_min_merge.py
 extract_spec3.py
+cloisonne-generator/tests/_lineart_*
