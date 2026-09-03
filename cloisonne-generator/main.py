@@ -121,11 +121,13 @@ async def analyze(
         if effective_mode == "svg":
             # 普通SVG模式：直接返回VTracer原始SVG
             from backend.segmentation.vtracer_adapter import VTracerAdapter
+            from backend.segmentation.vtracer_config import VTracerConfig
             adapter = VTracerAdapter(
-                color_precision=config["color_precision"],
-                filter_speckle=config["filter_speckle"],
-                mode=config["mode"],
-                hierarchical=config["hierarchical"],
+                VTracerConfig(
+                    colormode="color", hierarchical=config["hierarchical"],
+                    mode=config["mode"], filter_speckle=config["filter_speckle"],
+                    color_precision=config["color_precision"],
+                )
             )
             svg_raw = adapter.convert(image_bytes, _detect_format(file.filename))
             current_pipeline = adapter
@@ -144,11 +146,13 @@ async def analyze(
         if effective_mode == "outline":
             # 仅轮廓模式：VTracer用none模式只输出轮廓线
             from backend.segmentation.vtracer_adapter import VTracerAdapter
+            from backend.segmentation.vtracer_config import VTracerConfig
             adapter = VTracerAdapter(
-                color_precision=config["color_precision"],
-                filter_speckle=config["filter_speckle"],
-                mode="none",
-                hierarchical="cutout",
+                VTracerConfig(
+                    colormode="color", hierarchical="cutout",
+                    mode="none", filter_speckle=config["filter_speckle"],
+                    color_precision=config["color_precision"],
+                )
             )
             svg_raw = adapter.convert(image_bytes, _detect_format(file.filename))
             current_pipeline = adapter

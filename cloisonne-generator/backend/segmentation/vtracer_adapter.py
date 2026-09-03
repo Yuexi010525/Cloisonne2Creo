@@ -5,6 +5,8 @@ VTracerAdapter - VTracer开源矢量化引擎适配器
 - 参数: colormode=color, hierarchical=cutout, mode=spline
 - 从VTracer SVG中解析出颜色区域，生成label_map + Shapely Polygon
   （V2.1: 保留矢量几何，供Shared Boundary做Shapely矢量化，不再栅格化）
+V2.3:
+- 参数统一由 VTracerConfig 管理，本适配器不再接收散参
 """
 import io
 import re
@@ -12,15 +14,23 @@ import numpy as np
 import cv2
 import vtracer
 
+from backend.segmentation.vtracer_config import VTracerConfig
+
 
 class VTracerAdapter:
-    def __init__(self, color_precision=6, filter_speckle=4,
+    def __init__(self, config=None, color_precision=6, filter_speckle=4,
                  mode="spline", hierarchical="cutout", colormode="color"):
-        self.color_precision = color_precision
-        self.filter_speckle = filter_speckle
-        self.mode = mode
-        self.hierarchical = hierarchical
-        self.colormode = colormode
+        # V2.3: 优先接受 VTracerConfig；兼容旧散参调用
+        if isinstance(config, VTracerConfig):
+            self.config = config
+        else:
+            self.config = VTracerConfig(
+                colormode=colormode,
+                hierarchical=hierarchical,
+                mode=mode,
+                filter_speckle=filter_speckle,
+                color_precision=color_precision,
+            )
         self.svg = None
         self.regions = []       # [{id, color, path, segments, area_px, polygon, ...}]
         self.label_map = None   # (H, W) 每个像素的区域ID
@@ -35,11 +45,7 @@ class VTracerAdapter:
         self.svg = vtracer.convert_raw_image_to_svg(
             img_bytes,
             img_format=img_format,
-            colormode=self.colormode,
-            hierarchical=self.hierarchical,
-            mode=self.mode,
-            filter_speckle=self.filter_speckle,
-            color_precision=self.color_precision,
+            **self.config.to_vtracer_kwargs(),
         )
         # 从SVG中读取宽高
         m = re.search(r'width="(\d+)" height="(\d+)"', self.svg)

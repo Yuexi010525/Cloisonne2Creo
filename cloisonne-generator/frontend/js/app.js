@@ -6,6 +6,36 @@ let currentResult = null;
 let isProcessing = false;
 let analysisId = 0; // 分析请求序号，用于丢弃过期结果
 
+// V2.3: 统一 PreviewState (规格书第27阶段: DOM不是状态源)
+const previewState = {
+  mode: null,
+  original: null,
+  binary: null,
+  skeleton: null,
+  pruned: null,
+  regions: null,
+  boundaries: null,
+  svg: null,
+};
+
+// V2.3: normalizeResult (规格书第28阶段)
+function normalizeResult(raw) {
+  return {
+    mode: raw?.mode ?? 'color',
+    engine: raw?.engine ?? null,
+    geometry: raw?.geometry ?? {},
+    stats: raw?.stats ?? {},
+    validation: raw?.validation ?? {},
+    preview: raw?.preview ?? {},
+    exports: raw?.exports ?? {},
+  };
+}
+
+// V2.3: Console 调试标记 (规格书第42阶段)
+function dbg(tag, ...args) {
+  console.log(`[${tag}]`, ...args);
+}
+
 // DOM元素
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
@@ -205,28 +235,54 @@ btnAnalyze.addEventListener('click', async () => {
   const selectedMode = document.querySelector('input[name="generate-mode"]:checked');
   formData.append('gen_mode', selectedMode ? selectedMode.value : 'auto');
 
+  dbg('STATE', '分析开始 requestId=' + requestId + ' mode=' + (document.querySelector('input[name="generate-mode"]:checked')?.value ?? 'auto'));
+
   let data;
+  let response;
 
   try {
-    const response = await fetch(`${API_BASE}/api/analyze`, {
+    response = await fetch(`${API_BASE}/api/analyze`, {
       method: 'POST',
       body: formData,
       cache: 'no-store',
     });
-    if (!response.ok) {
-      let message = `HTTP ${response.status}`;
-      try {
-        const err = await response.json();
-        message = err.detail || message;
-      } catch (_) {}
-      throw new Error(`后端分析失败: ${message}`);
-    }
+  } catch (err) {
+    // V2.3: 错误分类1 - 网络/连接错误
+    if (requestId !== analysisId) return;
+    console.error('[API] fetch失败', err);
+    setStatus('后端分析失败: 无法连接服务器', 'error');
+    previewInfo.textContent = '后端错误: ' + err.message;
+    isProcessing = false;
+    btnAnalyze.disabled = false;
+    return;
+  }
+
+  dbg('API', `POST /api/analyze ${response.status}`);
+
+  if (!response.ok) {
+    // V2.3: 错误分类1 - 后端返回错误
+    let message = `HTTP ${response.status}`;
+    try {
+      const err = await response.json();
+      message = err.detail || message;
+    } catch (_) {}
+    if (requestId !== analysisId) return;
+    console.error('[API] 后端分析失败', response.status, message);
+    setStatus('后端分析失败: ' + message, 'error');
+    previewInfo.textContent = '后端错误: ' + message;
+    isProcessing = false;
+    btnAnalyze.disabled = false;
+    return;
+  }
+
+  try {
     data = await response.json();
   } catch (err) {
-    if (requestId !== analysisId) return; // 过期请求，忽略
-    console.error('[API ERROR]', err);
-    setStatus('后端分析失败: ' + err.message, 'error');
-    previewInfo.textContent = '后端错误: ' + err.message;
+    // V2.3: 错误分类2 - JSON解析失败 (服务器返回了非JSON)
+    if (requestId !== analysisId) return;
+    console.error('[API] JSON解析失败', err);
+    setStatus('分析失败: 服务器返回数据格式错误', 'error');
+    previewInfo.textContent = '服务器返回数据格式错误: ' + err.message;
     isProcessing = false;
     btnAnalyze.disabled = false;
     return;
@@ -234,7 +290,7 @@ btnAnalyze.addEventListener('click', async () => {
 
   // V2.2.2: 请求返回时若已有更新的分析，丢弃本结果防止旧数据覆盖
   if (requestId !== analysisId) {
-    console.warn('[ANALYZE] 丢弃过期分析结果 requestId=' + requestId + ' current=' + analysisId);
+    console.warn('[STATE] 丢弃过期分析结果 requestId=' + requestId + ' current=' + analysisId);
     return;
   }
 
@@ -243,8 +299,9 @@ btnAnalyze.addEventListener('click', async () => {
     renderResult(currentResult);
     setStatus('分析完成', 'ready');
   } catch (err) {
-    console.error('[RENDER ERROR]', err);
-    console.error('[RESULT DATA]', data);
+    // V2.3: 错误分类3 - 分析成功但界面渲染失败
+    console.error('[RENDER] 渲染失败', err);
+    console.error('[RENDER] 原始数据', data);
     setStatus('分析成功，但界面渲染失败', 'error');
     previewInfo.textContent = '结果已返回，但前端显示失败: ' + err.message;
   } finally {
@@ -307,6 +364,11 @@ function resetAllPreviewLayers() {
 function clearPreviewForNewFile() {
   resetAllPreviewLayers();
   currentResult = null;
+  // V2.3: 重置 PreviewState
+  Object.assign(previewState, {
+    mode: null, original: null, binary: null, skeleton: null,
+    pruned: null, regions: null, boundaries: null, svg: null,
+  });
   btnExportSvg.disabled = true;
   btnDownloadSvg.disabled = true;
   btnDownloadDxf.disabled = true;
@@ -316,7 +378,9 @@ function clearPreviewForNewFile() {
 
 // ===== 渲染入口：先统一清空，再按模式分发 =====
 function renderResult(result) {
-  console.group('[renderResult]');
+  dbg('STATE', 'renderResult 开始, mode=' + (result?.mode ?? '?'));
+  dbg('STATE', 'reset preview');
+  console.group('[RENDER]');
   console.log('mode =', result?.mode);
   console.log('engine =', result?.engine);
   console.log('keys =', result ? Object.keys(result) : null);
@@ -324,6 +388,17 @@ function renderResult(result) {
   console.log('strokes =', result?.strokes);
   console.log('preview_images =', result?.preview_images);
   console.groupEnd();
+
+  // V2.3: 记录 PreviewState (DOM不是状态源)
+  const normalized = normalizeResult(result);
+  previewState.mode = result?.mode ?? null;
+  previewState.original = result?.preview_images?.original ?? null;
+  previewState.binary = result?.preview_images?.binary ?? null;
+  previewState.skeleton = result?.preview_images?.skeleton ?? null;
+  previewState.pruned = result?.preview_images?.pruned_skeleton ?? null;
+  previewState.regions = result?.preview_images?.regions ?? null;
+  previewState.boundaries = result?.preview_images?.boundaries ?? null;
+  previewState.svg = result?.svg ?? null;
 
   // V2.2.2: 渲染入口统一清空旧状态，各分支只负责渲染自己
   resetAllPreviewLayers();
@@ -681,7 +756,7 @@ function setStatus(text, type) {
   statusDot.className = `status-dot ${type}`;
 }
 
-// DOM ID 启动检查
+// DOM ID 启动检查 (V2.3 第43阶段)
 function checkRequiredDom() {
   const required = [
     'btn-analyze', 'result-summary', 'color-result-grid', 'lineart-result-grid',
@@ -689,14 +764,14 @@ function checkRequiredDom() {
     'res-la-curves', 'res-la-merged', 'res-la-hard', 'res-la-dense',
     'res-la-intersect', 'res-la-smallradius', 'res-validation',
     'preview-info', 'svg-container', 'img-original',
-    'img-binary', 'img-skeleton', 'img-pruned',
+    'img-binary', 'img-skeleton', 'img-pruned', 'img-regions', 'img-boundaries',
   ];
   const missing = required.filter(id => !document.getElementById(id));
   if (missing.length > 0) {
-    console.error('[DOM CHECK] Missing:', missing);
+    console.error('[DOM] Missing:', missing);
     return false;
   }
-  console.log('[DOM CHECK] OK');
+  dbg('DOM', 'all required layers present');
   return true;
 }
 

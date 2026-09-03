@@ -71,7 +71,7 @@ python main.py
 |------|------|------|
 | **自动检测** (默认) | 自动判断输入是彩色填充图还是黑白线稿，不确定时优先彩色模式 | 对应模式输出 |
 | **掐丝珐琅（彩色）** | 完整管线：VTracer分色 → Shared Boundary → 工程验证 → Creo导出 | 掐丝线 + DXF/IBL |
-| **线稿模式** (V2.1新增) | BW二值化 → Skeleton骨架化 → 中心线提取，彻底解决粗线变双线 | 中心线 + DXF/IBL |
+| **线稿模式** (V2.1新增, V2.3默认Skan) | BW二值化 → Skeleton骨架化 → 中心线提取，彻底解决粗线变双线 | 中心线 + DXF/IBL |
 | **普通SVG** | 仅 VTracer 彩色矢量化，不做掐丝处理 | 彩色SVG |
 | **仅轮廓** | 仅输出轮廓线 | 轮廓SVG |
 
@@ -84,6 +84,7 @@ python main.py
 | `skeleton_method` | skeletonize | 中心线算法：skeletonize / thin / medial_axis |
 | `border_crop_px` | 1 | 二值化后清除图像边界N像素（去除深色边框/压缩伪影） |
 | `binary_threshold` | None(Otsu) | 二值化固定阈值，None为Otsu自动阈值 |
+| `graph_engine` (V2.3) | skan | 骨架图引擎：skan（默认, A/B 验证更优）/ legacy |
 | `debug_dir` | None | 调试图输出目录（01_original~06_final_preview） |
 
 ## 参数预设模板
@@ -149,16 +150,24 @@ python main.py
 cloisonne-generator/
 ├── main.py                        # FastAPI 入口
 ├── start.bat                      # Windows 启动脚本
-├── requirements.txt               # 依赖清单（含vtracer, shapely, ezdxf）
+├── requirements.txt               # 依赖清单（版本锁定, V2.3）
 ├── frontend/
 │   ├── index.html                 # 主界面（三种模式 + 参数区）
 │   ├── css/style.css
 │   └── js/app.js
 ├── backend/
-│   ├── pipeline.py                # V2.1管线（VTracer + Shapely）
+│   ├── pipeline.py                # V2.1管线（VTracer + Shapely, V2.3统一mode）
+│   ├── result_schema.py           # 【V2.3】normalize_result 统一Schema + summarize_result
 │   ├── segmentation/
+│   │   ├── vtracer_config.py      # 【V2.3】VTracerConfig 统一参数配置
 │   │   ├── vtracer_adapter.py     # 【复用开源】VTracer适配器
 │   │   └── region_segmenter.py    # 【自研】区域分割+邻接图
+│   ├── lineart/                   # 【V2.1+】线稿管线 (骨架化+图分析)
+│   │   ├── pipeline.py            # 线稿主流程
+│   │   ├── detector.py            # 自动检测轻量增强
+│   │   ├── validator.py           # 【V2.3】hard_collision/dense_warning 语义分离
+│   │   ├── graph_skan.py          # 【V2.3】Skan 图引擎 (默认)
+│   │   └── graph.py               # Legacy 图引擎 (fallback)
 │   ├── boundary/
 │   │   └── shared_boundary.py     # 【自研·核心】Shapely矢量共享边界
 │   ├── curve/
@@ -176,11 +185,17 @@ cloisonne-generator/
 │   ├── dxf_exporter.py            # 【自研】DXF导出 (SPLINE)
 │   ├── ibl_exporter.py            # 【自研】IBL (Creo) 导出
 │   └── json_exporter.py           # 【自研】JSON项目文件
+├── scripts/                       # 【V2.3】测试工具
+│   ├── test_color.py              # 彩色回归
+│   ├── test_lineart.py            # 线稿 Skan/Legacy A/B
+│   ├── test_frontend_data.py      # 前端数据契约
+│   ├── benchmark.py               # 基准测试 → BENCHMARK_V23.md
+│   ├── gen_lineart_test_images.py # 线稿测试图生成
+│   └── gen_graph_ab_report.py     # → GRAPH_AB_REPORT.md
 ├── tests/
-│   ├── test_acceptance.py         # V2.1规格书最终验收
-│   ├── smoke_v21.py               # V2.1冒烟测试
-│   ├── test_v2_pipeline.py
-│   └── test_vtracer_adapter.py
+│   ├── _v23_fixtures/             # 【V2.3】线稿测试图 (自绘)
+│   ├── freeze_state.py            # 环境冻结检查
+│   └── ...
 └── examples/                      # 测试图 + 输出样例
 ```
 
@@ -214,6 +229,13 @@ cloisonne-generator/
   - CurveMerger：支持 **4 端点组合 + 自动翻转**（A.end→B.start / A.end→B.end / A.start→B.start / A.start→B.end），G0≤0.01mm + G1≤3°
   - CurveValidator：**Shapely 真几何检测**——自交用 `LineString.is_simple`，线距用 `LineString.distance`（曲线-曲线真实距离），替代 O(n²) 采样点对
   - 废弃代码移入 `backend/legacy/`（quantizer.py / processor.py）
+- **V2.3** (开源能力整合 + 前后端稳定化)
+  - VTracer 参数统一到 `VTracerConfig`（vtracer_config.py），散参兼容保留
+  - Skan 骨架图引擎设为默认（A/B 实测: 用户线稿曲线 173 vs Legacy 551, **-69% 碎片**），Legacy 保留 fallback
+  - 统一结果 Schema：`backend/result_schema.py`（normalize_result + summarize_result），彩色/线稿/SVG/轮廓 result 均带 `mode`
+  - 前端稳定化：统一 reset / RequestID 过期丢弃 / 错误分类（API/JSON/render 分离）/ Console 标记 [API][RENDER][STATE][DOM] / PreviewState / DOM 启动检查
+  - LineArt 验证语义分离：`hard_collision=error`（线距<线径）/ `dense_warning=warning`（<建议间距）独立计数
+  - 测试工具 `scripts/`：test_color / test_lineart(A/B) / test_frontend_data / benchmark
 
 ## 第三方依赖与许可证（规格书第五十一章）
 
@@ -221,10 +243,12 @@ cloisonne-generator/
 |------|--------|------|------|
 | **VTracer** | MIT | 矢量化引擎（图片→颜色区域→Spline） | https://github.com/visioncortex/vtracer |
 | **Shapely** | BSD-3-Clause | 矢量几何（共享边界/自交/线距） | https://github.com/shapely/shapely |
+| **scikit-image** | BSD-3-Clause | skeletonize 骨架化（粗线→单中心线） | https://github.com/scikit-image/scikit-image |
+| **Skan** | BSD-3-Clause | Skeleton 图分析（junction/edge，V2.3 默认引擎） | https://github.com/jni/skan |
 | **image-to-svg** | MIT | UI/流程参考项目 | https://github.com/edo1z/image-to-svg |
 | **svgpathtools** | MIT | SVG Path 解析 | https://github.com/mathandy/svgpathtools |
 | **ezdxf** | MIT | DXF 读写 | https://github.com/mozman/ezdxf |
-| **OpenCV** | Apache-2.0 | 图像处理/区域mask | https://github.com/opencv/opencv |
+| **OpenCV** | Apache-2.0 | 图像处理/区域mask/二值化 | https://github.com/opencv/opencv |
 | **NumPy** | BSD-3-Clause | 数值计算 | https://github.com/numpy/numpy |
 | **scikit-learn** | BSD-3-Clause | K-Means（保留备用） | https://github.com/scikit-learn/scikit-learn |
 | **FastAPI** | MIT | Web 框架 | https://github.com/tiangolo/fastapi |

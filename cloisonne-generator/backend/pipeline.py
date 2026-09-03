@@ -102,11 +102,12 @@ class CloisonnePipeline:
                 print(f"[warn] auto detect failed, fallback to color: {e}")
 
         # ========== Phase 1: VTracer 图片矢量化（复用开源） ==========
+        from backend.segmentation.vtracer_config import VTracerConfig
         self.vtracer = VTracerAdapter(
-            color_precision=color_precision,
-            filter_speckle=filter_speckle,
-            mode=mode,
-            hierarchical=hierarchical,
+            VTracerConfig(
+                colormode="color", hierarchical=hierarchical, mode=mode,
+                filter_speckle=filter_speckle, color_precision=color_precision,
+            )
         )
         svg_raw = self.vtracer.convert(image_bytes, img_format)
         regions = self.vtracer.parse_regions()
@@ -278,6 +279,7 @@ class CloisonnePipeline:
                 "scale_mm_per_px": round(scale, 6),
             },
             "engine": "vtracer",
+            "mode": "cloisonne",  # V2.3: 统一 schema, mode 必填
             "color_palette": palette,
             "regions": self.segmenter.get_regions_info(),
             "boundaries": self.boundary_extractor.get_boundaries_info(),
