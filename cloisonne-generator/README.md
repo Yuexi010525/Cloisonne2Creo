@@ -46,21 +46,40 @@ Input Classifier (自动检测: 颜色数/饱和度/黑白比例/灰度标准差
                     └─────────────────────────┘
 ```
 
-## 快速开始
+## 快速开始 (Windows)
 
-### 方式一：双击启动（推荐）
+### 方式 A：开发 / 调试（前台，推荐先试这个）
 
 ```
 双击 start.bat
 ```
 
-自动安装依赖、启动服务器并打开浏览器。
+start.bat 会自动：确定 Python（优先 .venv）→ 检查依赖 → 单实例检查（已在运行则直接开浏览器）→ 启动服务 → 健康轮询（最多 15s）→ 自动打开浏览器。
 
-### 方式二：命令行启动
+- 关闭"Cloisonne2Creo Server"窗口即停止服务
+- 首次运行依赖缺失时，先双击 `update.bat` 安装
+
+### 方式 B：开机自动启动（常驻，推荐正式使用）
+
+```
+双击 launcher\install_task.bat
+```
+
+注册 Windows 任务计划：**用户登录时自动启动 + 失败自动重启（5 秒 × 5 次）**。之后每次登录电脑服务自动就绪。
+
+- 停止当前服务：双击 `stop.bat`（按 PID+命令行精准停止，不会误杀其他 Python）
+- 重启：双击 `restart.bat`
+- 查看运行状态：双击 `healthcheck.bat`
+- 取消开机自启：双击 `launcher\uninstall_task.bat`
+- 升级依赖：双击 `update.bat`
+- 查看诊断日志：`logs\startup.log`、`logs\server.log`
+
+> 浏览器访问 http://127.0.0.1:8765 。若打不开，运行 `healthcheck.bat` 并把 `logs\startup.log` 内容反馈即可定位。
+
+### 命令行启动（备选）
 
 ```bash
-pip install -r requirements.txt
-python main.py
+.venv\Scripts\python.exe main.py
 ```
 
 然后访问 http://127.0.0.1:8765

@@ -325,7 +325,14 @@ async def get_full_result():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    # V2.3.1: 返回 service/version/pid/port, 供 healthcheck.bat / start.bat 判断
+    return {
+        "status": "ok",
+        "service": "Cloisonne2Creo",
+        "version": "2.3.1",
+        "pid": os.getpid(),
+        "port": 8765,
+    }
 
 
 @app.get("/api/download/dxf")
@@ -403,4 +410,77 @@ async def debug_ibl():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    import traceback as _tb
+    import datetime as _dt
+    import socket as _socket
+
+    LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(LOG_DIR, exist_ok=True)
+    STARTUP_LOG = os.path.join(LOG_DIR, "startup.log")
+    SERVER_LOG = os.path.join(LOG_DIR, "server.log")
+
+    def _log(entry):
+        try:
+            with open(STARTUP_LOG, "a", encoding="utf-8") as f:
+                f.write(entry + "\n")
+        except Exception:
+            pass
+
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] START")
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] Python = {sys.executable}")
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] Version = {sys.version}")
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] CWD = {os.getcwd()}")
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] Port = 8765")
+
+    # V2.3.1 服务自检: 缺失依赖明确报错
+    _DEPS = [
+        ("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
+        ("cv2", "opencv-python"), ("numpy", "numpy"),
+        ("skimage", "scikit-image"), ("skan", "skan"),
+        ("ezdxf", "ezdxf"), ("svgpathtools", "svgpathtools"),
+        ("vtracer", "vtracer"), ("shapely", "shapely"),
+        ("PIL", "Pillow"),
+    ]
+    missing = []
+    for mod, pkg in _DEPS:
+        try:
+            __import__(mod)
+        except Exception:
+            missing.append(pkg)
+    if missing:
+        msg = f"Missing dependency: {', '.join(missing)}"
+        _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] [ERROR] {msg}")
+        print(msg)
+        raise SystemExit(f"[ERROR] {msg}")
+
+    _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] Dependencies OK ({len(_DEPS)} modules)")
+
+    # V2.3.1: 日志同时输出控制台 + logs/server.log
+    import logging
+    import logging.handlers
+    _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    _file_h = logging.FileHandler(SERVER_LOG, encoding="utf-8")
+    _file_h.setFormatter(_fmt)
+    _console_h = logging.StreamHandler()
+    _console_h.setFormatter(_fmt)
+    _root = logging.getLogger("uvicorn")
+    _root.handlers = []
+    _root.addHandler(_file_h)
+    _root.addHandler(_console_h)
+    _root.setLevel(logging.INFO)
+    for _lg in ("uvicorn.error", "uvicorn.access"):
+        _lg_h = logging.getLogger(_lg)
+        _lg_h.handlers = []
+        _lg_h.addHandler(_file_h)
+        _lg_h.addHandler(_console_h)
+        _lg_h.propagate = False
+
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info", log_config=None,
+                    access_log=True)
+    except Exception:
+        _tb.print_exc()
+        _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] [ERROR] server exception\n{_tb.format_exc()}")
+        raise
+    finally:
+        _log(f"[{_dt.datetime.now():%Y-%m-%d %H:%M:%S}] SHUTDOWN")
