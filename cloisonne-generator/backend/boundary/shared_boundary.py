@@ -150,10 +150,13 @@ class SharedBoundaryExtractor:
         背景-花瓣共享边界被buffer过度提取成"闭合轮廓"(含花瓣间共享段),
         与真正的花瓣间边界重叠 → 假线距冲突。
         只裁剪闭合边界, 避免误伤正常开放边界(Test04因过度裁剪冲突3→12)。
+        V2.3.2: 用 STRtree 空间索引把 O(N^2) 改为 O(N log N),
+        避免复杂彩色图(闭合边界多)时 unary_union+buffer 全量组合导致卡死/内存爆炸。
         """
         try:
             from shapely.geometry import LineString
             from shapely.ops import unary_union
+            from shapely.strtree import STRtree
         except ImportError:
             return
         all_bounds = list(self.boundaries) + list(self.outline_boundaries)
@@ -174,8 +177,15 @@ class SharedBoundaryExtractor:
         if not line_objs:
             return
         import os
-        # 预计算所有边界的线并集, 每边界的排除集=并集-自身
-        u_all = unary_union([lj for _, lj, _, _, _ in line_objs])
+        geoms = [lj for _, lj, _, _, _ in line_objs]
+        # 空间索引: 只处理与当前边界真正相交/邻近的少数候选
+        tree = STRtree(geoms)
+        closed_count = sum(1 for _, _, is_c, _, _ in line_objs if is_c)
+        # 保护上限: 闭合边界过多时(极端复杂图)跳过裁剪, 优先保证不卡死
+        if closed_count > 400:
+            if os.environ.get("PRUNE_DEBUG"):
+                print(f"[prune] skip: closed_count={closed_count} too large")
+            return
         for i in range(len(line_objs)):
             bi, ln, is_closed, ra, rb = line_objs[i]
             # 只裁剪"含被子段覆盖"的闭合边界: 只有闭合边界与其他边界有
@@ -184,8 +194,19 @@ class SharedBoundaryExtractor:
             if not is_closed or (ra != 0 and rb != 0):
                 continue
             try:
-                others_i = [lj for bj, lj, _, _, _ in line_objs if bj != bi]
-                o_union = unary_union(others_i)
+                # bbox 级候选(空间索引), 再精确过滤距离
+                cand = tree.query(ln)
+                others = []
+                for c in cand:
+                    j = int(c)
+                    if j == i:
+                        continue
+                    lj = geoms[j]
+                    if ln.distance(lj) < (overlap_tol_mm * 2.0 + 1e-6):
+                        others.append(lj)
+                if not others:
+                    continue
+                o_union = unary_union(others)
                 if o_union.is_empty:
                     continue
                 # 重叠总长度(排除端点相接)

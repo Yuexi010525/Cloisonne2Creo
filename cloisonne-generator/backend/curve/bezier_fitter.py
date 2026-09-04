@@ -8,6 +8,8 @@ import numpy as np
 
 
 class BezierFitter:
+    MAX_FIT_POINTS = 1000  # V2.3.2: 单条曲线拟合点数上限(保护, 避免稠密边界卡死)
+
     def __init__(self, max_error_mm=0.1, max_segments=50):
         self.max_error_mm = max_error_mm
         self.max_segments = max_segments
@@ -26,13 +28,18 @@ class BezierFitter:
             p2 = [p0[0] + 2*(p3[0]-p0[0])/3, p0[1] + 2*(p3[1]-p0[1])/3]
             return [{"type": "cubic_bezier", "p0": p0, "p1": p1, "p2": p2, "p3": p3}]
 
+        # V2.3.2: 点数保护, 均匀抽稀保留首尾, 避免复杂边界递归拟合卡死
+        if len(points) > self.MAX_FIT_POINTS:
+            keep = np.linspace(0, len(points) - 1, self.MAX_FIT_POINTS).astype(int)
+            points = [points[i] for i in keep]
         pts = np.array(points, dtype=np.float64)
         segments = self._fit_curve(pts, 0, len(pts) - 1)
         return segments
 
-    def _fit_curve(self, points, start, end, depth=0):
-        """递归拟合：如果误差超过阈值，则在最大误差点拆分"""
-        if depth > 20 or (end - start) < 2:
+    def _fit_curve(self, points, start, end, depth=0, seg_count=0):
+        """递归拟合：如果误差超过阈值，则在最大误差点拆分
+        V2.3.2: max_segments 硬上限 + 深度上限, 防止复杂边界递归爆炸"""
+        if depth > 12 or (end - start) < 2 or seg_count >= self.max_segments:
             return [self._fit_single_segment(points[start:end+1])]
 
         segment = self._fit_single_segment(points[start:end+1])
@@ -48,8 +55,8 @@ class BezierFitter:
                 max_idx = i
 
         if max_error > self.max_error_mm and (max_idx - start) > 1 and (end - max_idx) > 1:
-            left = self._fit_curve(points, start, max_idx, depth + 1)
-            right = self._fit_curve(points, max_idx, end, depth + 1)
+            left = self._fit_curve(points, start, max_idx, depth + 1, seg_count)
+            right = self._fit_curve(points, max_idx, end, depth + 1, seg_count + len(left))
             return left + right
         else:
             return [segment]
@@ -99,17 +106,19 @@ class BezierFitter:
             "p3": [round(float(p3[0]), 4), round(float(p3[1]), 4)],
         }
 
-    def _point_to_bezier_distance(self, point, bezier, samples=20):
-        """点到贝塞尔曲线的近似距离（采样法）"""
+    def _point_to_bezier_distance(self, point, bezier, samples=12):
+        """点到贝塞尔曲线的近似距离（采样法, 向量化）"""
         p = np.array(point, dtype=np.float64)
-        min_dist = float('inf')
-        for i in range(samples + 1):
-            t = i / samples
-            bp = self._bezier_point(bezier, t)
-            dist = np.linalg.norm(p - bp)
-            if dist < min_dist:
-                min_dist = dist
-        return min_dist
+        p0 = np.array(bezier["p0"], dtype=np.float64)
+        p1 = np.array(bezier["p1"], dtype=np.float64)
+        p2 = np.array(bezier["p2"], dtype=np.float64)
+        p3 = np.array(bezier["p3"], dtype=np.float64)
+        ts = np.linspace(0.0, 1.0, samples + 1)
+        t = ts[:, None]  # (21,1)
+        m = 1.0 - t
+        bps = m**3 * p0 + 3 * m**2 * t * p1 + 3 * m * t**2 * p2 + t**3 * p3
+        dists = np.linalg.norm(bps - p, axis=1)
+        return float(dists.min())
 
     def _bezier_point(self, bezier, t):
         """计算贝塞尔曲线上t处的点"""

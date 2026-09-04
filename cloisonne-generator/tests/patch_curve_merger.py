@@ -1,82 +1,18 @@
+# -*- coding: utf-8 -*-
+"""Optimize CurveMerger.merge: endpoint grid index.
+Only curves whose endpoints fall in the same/adjacent grid cell (distance
+<= g0_tolerance) are considered, so the O(N^2) full scan becomes near-linear.
+Merging logic (G0/G1, 4 modes, flip) is unchanged -> identical results.
 """
-CurveMerger - 曲线合并模块
-规格书第21-23章 + V2.1 (ChatGPT审查意见):
-- G0连续: 终点与下一段起点重合，允许误差0.01mm
-- G1连续: 相邻曲线切线方向夹角 ≤ 3°
-- V2.1: 支持4种端点组合 + 自动翻转方向:
-  A.end→B.start / A.end→B.end / A.start→B.start / A.start→B.end
-  必要时 reverse(B) 后再判断 G0/G1
-"""
-import numpy as np
+p = r'F:\000-deepseek\掐丝模型生成器\cloisonne-generator\backend\curve\curve_merger.py'
+d = open(p, 'rb').read().decode('utf-8')
 
+start_marker = '    def merge(self, curves):'
+end_marker = '    def _g1_ok(self, t1, t2):'
+si = d.index(start_marker)
+ei = d.index(end_marker)
 
-class CurveMerger:
-    def __init__(self, g0_tolerance_mm=0.01, g1_angle_deg=3.0):
-        self.g0_tolerance_mm = g0_tolerance_mm
-        self.g1_angle_deg = g1_angle_deg
-
-    # =====================================================================
-    # 切线工具（基于段序列）
-    # =====================================================================
-    @staticmethod
-    def _seg_start_tangent(seg):
-        p0 = np.array(seg["p0"])
-        p1 = np.array(seg["p1"])
-        t = p1 - p0
-        n = np.linalg.norm(t)
-        return t / n if n > 0 else t
-
-    @staticmethod
-    def _seg_end_tangent(seg):
-        p2 = np.array(seg["p2"])
-        p3 = np.array(seg["p3"])
-        t = p3 - p2
-        n = np.linalg.norm(t)
-        return t / n if n > 0 else t
-
-    @classmethod
-    def _seq_start_tangent(cls, segments):
-        return cls._seg_start_tangent(segments[0])
-
-    @classmethod
-    def _seq_end_tangent(cls, segments):
-        return cls._seg_end_tangent(segments[-1])
-
-    @staticmethod
-    def _tangent_angle(t1, t2):
-        cos_angle = np.clip(np.dot(t1, t2), -1.0, 1.0)
-        return abs(np.degrees(np.arccos(cos_angle)))
-
-    @staticmethod
-    def _reverse_segments(segments):
-        """翻转段序列方向（段序反转 + 每段起终点互换）"""
-        new = []
-        for seg in reversed(segments):
-            new.append({
-                "p0": seg["p3"], "p1": seg["p2"],
-                "p2": seg["p1"], "p3": seg["p0"],
-            })
-        return new
-
-    # =====================================================================
-    # 兼容旧接口
-    # =====================================================================
-    def check_g0(self, curve_a, curve_b):
-        a_end = np.array(curve_a["segments"][-1]["p3"])
-        b_start = np.array(curve_b["segments"][0]["p0"])
-        d = np.linalg.norm(a_end - b_start)
-        return d <= self.g0_tolerance_mm, round(float(d), 6)
-
-    def check_g1(self, curve_a, curve_b):
-        a_tangent = self._seq_end_tangent(curve_a["segments"])
-        b_tangent = self._seq_start_tangent(curve_b["segments"])
-        angle = self._tangent_angle(a_tangent, b_tangent)
-        return angle <= self.g1_angle_deg, round(float(angle), 3)
-
-    # =====================================================================
-    # V2.1 合并（4种端点组合 + 自动翻转）
-    # =====================================================================
-    def merge(self, curves):
+new_merge = '''    def merge(self, curves):
         """
         合并连续曲线（V2.1: 支持自动翻转方向）
         curves: [{"id", "segments": [...]}, ...]
@@ -222,19 +158,7 @@ class CurveMerger:
 
         return result
 
-    def _g1_ok(self, t1, t2):
-        return self._tangent_angle(t1, t2) <= self.g1_angle_deg
-
-    @staticmethod
-    def _first_pt(segments):
-        return np.array(segments[0]["p0"])
-
-    @staticmethod
-    def _last_pt(segments):
-        return np.array(segments[-1]["p3"])
-
-    def _group_segments(self, group):
-        segments = []
-        for c in group:
-            segments.extend(c["segments"])
-        return segments
+'''
+d = d[:si] + new_merge + d[ei:]
+open(p, 'wb').write(d.encode('utf-8'))
+print('patched curve_merger (endpoint grid index)')
